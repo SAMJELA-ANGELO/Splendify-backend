@@ -1,24 +1,27 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Plan, PlanDocument } from '../schemas/plan.schema';
+import { Prisma, Plan as PrismaPlan } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class PlansService {
   private readonly logger = new Logger(PlansService.name);
 
-  constructor(@InjectModel(Plan.name) private planModel: Model<PlanDocument>) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(): Promise<Plan[]> {
-    this.logger.log(`📋 Fetching all plans`);
-    const plans = await this.planModel.find().exec();
+  async findAll(tenantId: string): Promise<PrismaPlan[]> {
+    this.logger.log(`📋 Fetching all plans (Tenant: ${tenantId})`);
+    const plans = await this.prisma.plan.findMany({
+      where: { tenantId },
+    });
     this.logger.log(`✅ Retrieved ${plans.length} plans`);
     return plans;
   }
 
-  async findById(id: string): Promise<Plan | null> {
-    this.logger.log(`🔍 Fetching plan: ${id}`);
-    const plan = await this.planModel.findById(id).exec();
+  async findById(tenantId: string, id: string): Promise<PrismaPlan | null> {
+    this.logger.log(`🔍 Fetching plan: ${id} (Tenant: ${tenantId})`);
+    const plan = await this.prisma.plan.findFirst({
+      where: { id, tenantId },
+    });
     if (plan) {
       this.logger.log(`✅ Plan found: ${plan.name}`);
     } else {
@@ -27,48 +30,71 @@ export class PlansService {
     return plan;
   }
 
-  async create(planData: {
-    name: string;
-    price: number;
-    duration: number;
-  }): Promise<Plan> {
+  async create(
+    tenantId: string,
+    planData: {
+      name: string;
+      price: number;
+      duration: number;
+    },
+  ): Promise<PrismaPlan> {
     this.logger.log(
-      `➕ Creating new plan: ${planData.name} (${planData.price} XAF, ${planData.duration}h)`,
+      `➕ Creating new plan: ${planData.name} (${planData.price} XAF, ${planData.duration}h) (Tenant: ${tenantId})`,
     );
-    const newPlan = new this.planModel(planData);
-    const savedPlan = await newPlan.save();
-    this.logger.log(
-      `✅ Plan created: ${savedPlan.name} (ID: ${savedPlan._id})`,
-    );
+    const savedPlan = await this.prisma.plan.create({
+      data: {
+        tenantId,
+        ...planData,
+      },
+    });
+    this.logger.log(`✅ Plan created: ${savedPlan.name} (ID: ${savedPlan.id})`);
     return savedPlan;
   }
 
   async update(
+    tenantId: string,
     id: string,
-    updateData: Partial<{ name: string; price: number; duration: number }>,
-  ): Promise<Plan | null> {
+    updateData: Partial<{
+      name: string;
+      price: number;
+      duration: number;
+    }>,
+  ): Promise<PrismaPlan | null> {
     this.logger.log(
-      `✏️ Updating plan ${id} with: ${JSON.stringify(updateData)}`,
+      `✏️ Updating plan ${id} with: ${JSON.stringify(updateData)} (Tenant: ${tenantId})`,
     );
-    const updatedPlan = await this.planModel
-      .findByIdAndUpdate(id, updateData, { new: true })
-      .exec();
-    if (updatedPlan) {
-      this.logger.log(`✅ Plan updated: ${updatedPlan.name}`);
-    } else {
+    const existingPlan = await this.prisma.plan.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existingPlan) {
       this.logger.error(`❌ Failed to update plan: ${id}`);
+      return null;
     }
+
+    const updatedPlan = await this.prisma.plan.update({
+      where: { id },
+      data: updateData,
+    });
+    this.logger.log(`✅ Plan updated: ${updatedPlan.name}`);
     return updatedPlan;
   }
 
-  async delete(id: string): Promise<any> {
-    this.logger.log(`🗑️ Deleting plan: ${id}`);
-    const deleted = await this.planModel.findByIdAndDelete(id).exec();
-    if (deleted) {
-      this.logger.log(`✅ Plan deleted: ${deleted.name}`);
-    } else {
+  async delete(tenantId: string, id: string): Promise<PrismaPlan | null> {
+    this.logger.log(`🗑️ Deleting plan: ${id} (Tenant: ${tenantId})`);
+    const existingPlan = await this.prisma.plan.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existingPlan) {
       this.logger.error(`❌ Failed to delete plan: ${id}`);
+      return null;
     }
+
+    const deleted = await this.prisma.plan.delete({
+      where: { id },
+    });
+    this.logger.log(`✅ Plan deleted: ${deleted.name}`);
     return deleted;
   }
 }

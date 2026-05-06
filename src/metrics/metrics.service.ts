@@ -1,8 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { User, UserDocument } from '../schemas/user.schema';
-import { Session, SessionDocument } from '../schemas/session.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   MetricsDto,
   ConnectionMetricsResponseDto,
@@ -14,10 +11,7 @@ import axios from 'axios';
 export class MetricsService {
   private readonly logger = new Logger(MetricsService.name);
 
-  constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
-    @InjectModel(Session.name) private sessionModel: Model<SessionDocument>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Get current connection metrics for authenticated user
@@ -29,16 +23,18 @@ export class MetricsService {
     this.logger.log(`📊 Fetching current metrics for user: ${userId}`);
 
     try {
-      const user = await this.userModel.findById(userId).lean();
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
       if (!user) {
         throw new Error(`User not found: ${userId}`);
       }
 
       // Get active session if exists
-      const activeSession = await this.sessionModel
-        .findOne({ userId, isActive: true })
-        .sort({ startTime: -1 })
-        .lean();
+      const activeSession = await this.prisma.session.findFirst({
+        where: { userId, isActive: true },
+        orderBy: { startTime: 'desc' },
+      });
 
       if (!activeSession) {
         this.logger.log(`ℹ️ No active session for user: ${userId}`);
@@ -60,8 +56,8 @@ export class MetricsService {
         isConnected: activeSession.isActive,
         metrics: realMetrics,
         status: activeSession.isActive ? 'active' : 'inactive',
-        dataUsed: activeSession.dataUsed || 0,
-        sessionExpiry: user.sessionExpiry,
+        dataUsed: Number(activeSession.dataUsed) || 0,
+        sessionExpiry: user.sessionExpiry || undefined,
         router: user.routerIdentity || 'Home',
       };
 
@@ -98,13 +94,13 @@ export class MetricsService {
       const startTime = new Date(Date.now() - hours * 60 * 60 * 1000);
 
       // Fetch sessions from the period
-      const sessions = await this.sessionModel
-        .find({
+      const sessions = await this.prisma.session.findMany({
+        where: {
           userId,
-          startTime: { $gte: startTime },
-        })
-        .sort({ startTime: -1 })
-        .lean();
+          startTime: { gte: startTime },
+        },
+        orderBy: { startTime: 'desc' },
+      });
 
       // Generate mock metrics data points for the period
       // In production, this would fetch from a metrics collection or external service

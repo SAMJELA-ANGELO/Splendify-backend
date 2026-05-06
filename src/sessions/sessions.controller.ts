@@ -49,6 +49,7 @@ export class SessionsController {
     );
     try {
       const session = await this.sessionsService.getCurrentSession(
+        req.tenantId,
         req.user.userId,
       );
       this.logger.log(
@@ -89,6 +90,7 @@ export class SessionsController {
     this.logger.log(`⏱️ Session status requested for user: ${req.user.userId}`);
     try {
       const status = await this.sessionsService.getSessionStatus(
+        req.tenantId,
         req.user.userId,
       );
       this.logger.log(

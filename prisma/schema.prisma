@@ -1,0 +1,426 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum PaymentModel {
+  DIRECT  // Tenant uses their own Fapshi API keys
+  ESCROW  // Funds go to XenFi account; we payout later
+}
+
+enum PaymentPurpose {
+  USER_PLAN
+  TENANT_RENTAL
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ============================================
+// TENANT MANAGEMENT
+// ============================================
+
+model Tenant {
+  id               String   @id @default(cuid())
+  name             String
+  email            String
+  phone            String?
+  address          String?
+  logoUrl          String?
+  brandColors      Json?
+  businessName     String?
+  isActive         Boolean  @default(true)
+
+  // Billing Configuration - Hybrid Payment Model
+  paymentModel           PaymentModel @default(ESCROW) // DIRECT or ESCROW
+  fapshiApiKey           String? // Used ONLY if paymentModel is DIRECT
+  fapshiServiceId        String? // Used ONLY if paymentModel is DIRECT
+
+  // Escrow Tracking - Used ONLY if paymentModel is ESCROW
+  escrowBalance          Decimal      @default(0) @db.Decimal(15, 2) // ISP's earned funds in escrow
+  escrowLastUpdated      DateTime     @default(now())
+  payoutMobileMoney      String? // Phone number for mobile money payout
+  payoutMinimumThreshold Decimal      @default(10000) @db.Decimal(15, 2) // Minimum balance before payout
+
+  // Platform tracking
+  totalGrossRevenue      Decimal      @default(0) @db.Decimal(15, 2) // Total revenue before commission
+  totalCommissionEarned  Decimal      @default(0) @db.Decimal(15, 2) // XenFi's commission (5%)
+  totalPayoutsProcessed  Decimal      @default(0) @db.Decimal(15, 2) // Total paid to ISP
+
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  // Relations
+  users              User[]
+  plans              Plan[]
+  payments           Payment[]
+  sessions           Session[]
+  activities         Activity[]
+  routers            Router[]
+  payouts            Payout[]
+  payoutRequests     PayoutRequest[]
+  billingTransactions BillingTransaction[]
+  balanceTransactions BalanceTransaction[]
+  subscriptions      TenantSubscription[]
+
+  @@index([paymentModel])
+  @@index([escrowBalance])
+}
+
+// ============================================
+// USER MANAGEMENT
+// ============================================
+
+model User {
+  id                      String    @id @default(cuid())
+  tenantId                String?   // Optional for SUPER_ADMIN users
+  username                String    @unique // Made globally unique for super admin
+  voucherCode             String?   @unique // Voucher code for RADIUS authentication
+  email                   String?   @unique // Made globally unique
+  password                String
+  role                    String    @default("CUSTOMER") // 'SUPER_ADMIN', 'ISP_ADMIN', 'CUSTOMER'
+  planId                  String?
+  isActive                Boolean   @default(false)
+  sessionExpiry           DateTime?
+  mikrotikCreated         Boolean   @default(false)
+  macAddress              String?
+  ipAddress               String?
+  routerIdentity          String?
+  notification30minSent   DateTime?
+  notification10minSent   DateTime?
+  notificationExpiredSent DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  // Relations
+  tenant     Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan       Plan?      @relation(fields: [planId], references: [id], onDelete: SetNull)
+  payments   Payment[]
+  sessions   Session[]
+  activities Activity[]
+
+  @@unique([tenantId, username])
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([planId])
+  @@index([voucherCode])
+  @@index([role])
+}
+
+// ============================================
+// PLANS & BILLING
+// ============================================
+
+model Plan {
+  id             String   @id @default(cuid())
+  tenantId       String
+  name           String
+  price          Decimal  @db.Decimal(10, 2)
+  duration       Int // hours
+  dataLimit      BigInt? // bytes (total data limit)
+  downloadLimit  BigInt? // bytes per second (download speed limit)
+  uploadLimit    BigInt? // bytes per second (upload speed limit)
+  sessionTimeout Int? // seconds (maximum session duration)
+  speedLimit     Int? // Mbps (legacy field, kept for compatibility)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  payments Payment[]
+  users    User[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model TenantRentalOption {
+  id           String   @id @default(cuid())
+  name         String
+  price        Decimal  @db.Decimal(15, 2)
+  billingCycle String   @default("MONTHLY")
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions TenantSubscription[]
+}
+
+model TenantSubscription {
+  id              String   @id @default(cuid())
+  tenantId        String
+  optionId        String
+  status          String   @default("ACTIVE")
+  amount          Decimal  @db.Decimal(15, 2)
+  billingCycle    String
+  startDate       DateTime @default(now())
+  expiresAt       DateTime
+  lastPaymentId   String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  option  TenantRentalOption  @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  payment Payment?            @relation(fields: [lastPaymentId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([optionId])
+}
+
+model Payment {
+  id                        String    @id @default(cuid())
+  tenantId                  String
+  userId                    String?
+  planId                    String?
+  amount                    Decimal   @db.Decimal(15, 2) // Original plan price or subscription amount
+  grossAmount               Decimal   @db.Decimal(15, 2) // Amount after fees (for ESCROW)
+  status                    String    @default("created") // 'created', 'pending', 'SUCCESSFUL', 'FAILED', 'EXPIRED'
+  paymentModel              PaymentModel @default(ESCROW) // Which model was used for this transaction
+  paymentPurpose            PaymentPurpose @default(USER_PLAN)
+  tenantSubscriptionId      String?
+  fapshiTransactionId       String
+  email                     String?
+  phone                     String?
+  externalId                String?
+  fapshiResponse            Json?
+  isGift                    Boolean   @default(false)
+  recipientUsername         String?
+  macAddress                String?
+  ipAddress                 String?
+  routerIdentity            String?
+  userIp                    String?
+  password                  String?
+  activeRouter              String?
+  attemptCount              Int      @default(1)
+  escrowCredited            Boolean   @default(false) // Was escrow balance credited for this payment?
+  createdAt                 DateTime  @default(now())
+  notificationInitiatedSent DateTime?
+  notificationSuccessSent   DateTime?
+  notificationFailedSent    DateTime?
+
+  // Relations
+  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  plan       Plan?                 @relation(fields: [planId], references: [id], onDelete: SetNull)
+  transaction BillingTransaction?
+  balanceTransactions BalanceTransaction[]
+  tenantSubscription TenantSubscription?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([paymentModel])
+  @@index([paymentPurpose])
+  @@index([fapshiTransactionId])
+}
+
+// Escrow Payout Model - Tracks ISP payouts in ESCROW mode
+model Payout {
+  id          String        @id @default(cuid())
+  tenantId    String
+  amount      Decimal       @db.Decimal(15, 2) // Amount being paid out
+  status      PayoutStatus  @default(PENDING)
+  mobileMoney String // Phone number where money goes
+  reference   String? // External reference from payment gateway
+  notes       String?
+  requestedAt DateTime      @default(now())
+  processedAt DateTime?
+  completedAt DateTime?
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([requestedAt])
+}
+
+// Billing Transaction Model - Detailed audit trail for all transactions
+model BillingTransaction {
+  id              String    @id @default(cuid())
+  tenantId        String
+  paymentId       String    @unique
+  transactionType String // 'PAYMENT', 'COMMISSION_DEDUCTION', 'PAYOUT', 'ADJUSTMENT'
+  originalAmount  Decimal   @db.Decimal(15, 2) // Original amount
+  commissionRate  Decimal   @db.Decimal(5, 4) // Commission percentage (e.g., 0.0500 for 5%)
+  commissionAmount Decimal   @db.Decimal(15, 2) // Commission deducted
+  netAmount       Decimal   @db.Decimal(15, 2) // Amount credited to escrow (original - commission)
+  description     String?
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([transactionType])
+  @@index([createdAt])
+}
+
+model PayoutRequest {
+  id          String       @id @default(cuid())
+  tenantId    String
+  amount      Decimal      @db.Decimal(15, 2)
+  status      PayoutStatus @default(PENDING)
+  mobileMoney String
+  reference   String?
+  notes       String?
+  requestedAt DateTime     @default(now())
+  processedAt DateTime?
+  completedAt DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balanceTransactions BalanceTransaction[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([requestedAt])
+}
+
+model BalanceTransaction {
+  id              String    @id @default(cuid())
+  tenantId        String
+  paymentId       String?
+  payoutRequestId String?
+  amount          Decimal   @db.Decimal(15, 2)
+  fee             Decimal   @db.Decimal(15, 2)
+  netAmount       Decimal   @db.Decimal(15, 2)
+  transactionType String    @default("CREDIT")
+  description     String?
+  createdAt       DateTime  @default(now())
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  payment       Payment?       @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  payoutRequest PayoutRequest? @relation(fields: [payoutRequestId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([paymentId])
+  @@index([payoutRequestId])
+  @@index([transactionType])
+  @@index([createdAt])
+}
+
+// ============================================
+// ROUTER MANAGEMENT
+// ============================================
+
+model Router {
+  id              String   @id @default(cuid())
+  tenantId        String
+  name            String
+  localIpAddress  String   // LAN IP address (e.g., 192.168.88.1)
+  username        String
+  password        String   // Encrypted admin password
+  identity        String?  // MikroTik identity/system name
+  radiusSecret    String?  // Shared secret for RADIUS authentication (encrypted)
+  adminPassword   String?  // Encrypted admin password for provisioning
+  location        String?  // Physical location of the router
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@index([tenantId])
+}
+
+// ============================================
+// SESSIONS
+// ============================================
+
+model Session {
+  id                 String    @id @default(cuid())
+  tenantId           String
+  userId             String
+  routerId           String?
+  startTime          DateTime
+  endTime            DateTime?
+  dataUsed           BigInt    @default(0)
+  dataUsedDownload   BigInt    @default(0) // RADIUS Acct-Input-Octets
+  dataUsedUpload     BigInt    @default(0) // RADIUS Acct-Output-Octets
+  isActive           Boolean   @default(false)
+  remainingTime      Int       @default(0) // seconds remaining
+  sessionTimeout     Int? // seconds (maximum session duration)
+  macAddress         String?
+  ipAddress          String?
+  nasIdentifier      String? // RADIUS NAS-Identifier
+  nasIpAddress       String? // RADIUS NAS-IP-Address
+  framedIpAddress    String? // RADIUS Framed-IP-Address
+  callingStationId   String? // RADIUS Calling-Station-Id (MAC)
+  calledStationId    String? // RADIUS Called-Station-Id
+  acctSessionId      String? // RADIUS Acct-Session-Id
+  acctTerminateCause String? // RADIUS Acct-Terminate-Cause
+  createdAt          DateTime  @default(now())
+
+  // Relations
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  router Router? @relation(fields: [routerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([isActive])
+  @@index([userId])
+  @@index([macAddress])
+}
+
+// ============================================
+// ACTIVITIES & LOGGING
+// ============================================
+
+model Activity {
+  id             String   @id @default(cuid())
+  tenantId       String
+  userId         String?
+  sessionId      String?
+  action         String
+  category       String
+  details        Json?
+  status         String   @default("success") // 'success', 'failed', 'pending', 'warning'
+  description    String?
+  ipAddress      String?
+  userAgent      String?
+  routerIdentity String?
+  createdAt      DateTime @default(now())
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ============================================
+// BLACKLIST MANAGEMENT
+// ============================================
+
+model Blacklist {
+  id        String   @id @default(uuid())
+  type      String   // "IP", "PHONE", or "MAC"
+  value     String   @unique
+  reason    String?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+}

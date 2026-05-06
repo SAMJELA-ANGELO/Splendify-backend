@@ -7,14 +7,17 @@ import { AuthController } from './auth.controller';
 import { UsersModule } from '../users/users.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { MikrotikModule } from '../mikrotik/mikrotik.module';
+import { TenantsModule } from '../tenants/tenants.module';
 import { JwtStrategy } from './jwt.strategy';
 import { LocalStrategy } from './local.strategy';
+import { TenantAuthController } from './tenant-auth.controller';
 
 @Module({
   imports: [
     UsersModule,
     PaymentsModule,
     MikrotikModule,
+    TenantsModule,
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -26,6 +29,6 @@ import { LocalStrategy } from './local.strategy';
     }),
   ],
   providers: [AuthService, LocalStrategy, JwtStrategy],
-  controllers: [AuthController],
+  controllers: [AuthController, TenantAuthController],
 })
 export class AuthModule {}

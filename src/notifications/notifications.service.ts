@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { User } from '../schemas/user.schema';
+import { User as PrismaUser } from '@prisma/client';
 
 @Injectable()
 export class NotificationsService {
@@ -9,7 +9,7 @@ export class NotificationsService {
    * Send 30-minute warning notification to user
    */
   async sendSessionWarning30min(
-    user: User,
+    user: PrismaUser,
     remainingTime: number,
   ): Promise<void> {
     try {
@@ -44,7 +44,7 @@ export class NotificationsService {
    * Send 10-minute warning notification to user
    */
   async sendSessionWarning10min(
-    user: User,
+    user: PrismaUser,
     remainingTime: number,
   ): Promise<void> {
     try {
@@ -69,7 +69,7 @@ export class NotificationsService {
   /**
    * Send session expired notification to user
    */
-  async sendSessionExpiredNotification(user: User): Promise<void> {
+  async sendSessionExpiredNotification(user: PrismaUser): Promise<void> {
     try {
       this.logger.log(
         `📧 Sending session expired notification to user: ${user.username}`,

@@ -18,6 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 import { WebhookDto } from './dto/webhook.dto';
 
@@ -44,7 +45,7 @@ export class PaymentsController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 400, description: 'Invalid plan or request' })
   @ApiSecurity('JWT')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
   @Post('initiate')
   async initiate(@Body() body: InitiatePaymentDto, @Request() req) {
     this.logger.log(
@@ -52,6 +53,7 @@ export class PaymentsController {
     );
     try {
       const result = await this.paymentsService.initiatePayment(
+        req.tenantId,
         req.user.userId,
         body.planId,
         body.email,
@@ -147,13 +149,41 @@ export class PaymentsController {
   }
 
   @ApiOperation({
-    summary: 'Webhook endpoint for Fapshi payment notifications',
+    summary: 'Handle Fapshi payment webhooks for billing',
+    description:
+      "Processes payment status updates from Fapshi gateway. For ESCROW mode tenants, successful payments credit the tenant's escrow balance with commission deduction. For DIRECT mode, payments are processed normally without escrow involvement.",
   })
   @ApiResponse({
     status: 200,
     description: 'Webhook processed successfully',
+    schema: {
+      example: {
+        success: true,
+        message: 'Payment processed successfully',
+        transactionId: 'AbCd1234',
+        amount: 5000,
+        tenantId: 'tenant-123',
+        paymentModel: 'ESCROW',
+        escrowCredited: 4750,
+        commission: 250,
+      },
+    },
   })
-  @ApiResponse({ status: 400, description: 'Invalid webhook payload' })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid webhook payload or transaction not found',
+    schema: {
+      example: {
+        success: false,
+        message: 'Transaction not found',
+        transactionId: 'AbCd1234',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 500,
+    description: 'Internal server error during webhook processing',
+  })
   @Post('webhook')
   async handleWebhook(@Body() body: WebhookDto) {
     this.logger.log(

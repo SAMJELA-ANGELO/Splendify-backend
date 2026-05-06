@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Payment } from '../schemas/payment.schema';
+import { Payment as PrismaPayment } from '@prisma/client';
 
 @Injectable()
 export class PaymentNotificationsService {
@@ -10,7 +10,7 @@ export class PaymentNotificationsService {
    */
   async sendPaymentInitiatedNotification(
     userId: string,
-    payment: Payment,
+    payment: PrismaPayment,
     amount: number,
     phone: string,
   ): Promise<void> {
@@ -43,7 +43,7 @@ export class PaymentNotificationsService {
    */
   async sendPaymentSuccessNotification(
     userId: string,
-    payment: Payment,
+    payment: PrismaPayment,
     amount: number,
     planName: string,
     duration: number,
@@ -77,7 +77,7 @@ export class PaymentNotificationsService {
    */
   async sendPaymentFailedNotification(
     userId: string,
-    payment: Payment,
+    payment: PrismaPayment,
     amount: number,
     reason?: string,
   ): Promise<void> {
@@ -110,7 +110,7 @@ export class PaymentNotificationsService {
    */
   async sendPaymentPendingNotification(
     userId: string,
-    payment: Payment,
+    payment: PrismaPayment,
     amount: number,
   ): Promise<void> {
     try {

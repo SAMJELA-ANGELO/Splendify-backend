@@ -1,15 +1,13 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
 import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
-import { Session, SessionSchema } from '../schemas/session.schema';
 import { UsersModule } from '../users/users.module';
+import { PlansModule } from '../plans/plans.module';
+import { PrismaModule } from '../prisma/prisma.module';
+import { RouterModule } from '../router/router.module';
 
 @Module({
-  imports: [
-    MongooseModule.forFeature([{ name: Session.name, schema: SessionSchema }]),
-    UsersModule,
-  ],
+  imports: [UsersModule, PlansModule, PrismaModule, RouterModule],
   controllers: [SessionsController],
   providers: [SessionsService],
   exports: [SessionsService],

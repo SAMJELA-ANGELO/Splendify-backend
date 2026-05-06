@@ -6,6 +6,9 @@ export type SessionDocument = Session & Document;
 @Schema()
 export class Session {
   @Prop({ required: true })
+  tenantId: string; // Multi-tenant support
+
+  @Prop({ required: true })
   id: string;
 
   @Prop({ required: true })

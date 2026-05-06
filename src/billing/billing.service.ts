@@ -1,28 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Payment, PaymentDocument } from '../schemas/payment.schema';
-import { Plan, PlanDocument } from '../schemas/plan.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import { InvoiceDto, BillingHistoryResponseDto, BillingStatsDto } from './dto';
 
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
 
-  constructor(
-    @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
-    @InjectModel(Plan.name) private planModel: Model<PlanDocument>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   async getBillingHistory(userId: string): Promise<BillingHistoryResponseDto> {
     this.logger.log(`📋 Fetching billing history for user: ${userId}`);
 
     try {
       // Fetch all payments for this user, sorted by most recent first
-      const payments = await this.paymentModel
-        .find({ userId })
-        .sort({ createdAt: -1 })
-        .lean();
+      const payments = await this.prisma.payment.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      });
 
       if (!payments || payments.length === 0) {
         this.logger.log(`ℹ️ No payment history found for user: ${userId}`);
@@ -34,31 +28,29 @@ export class BillingService {
       }
 
       // Fetch all plans for reference
-      const plansMap = new Map();
-      const plans = await this.planModel.find().lean();
-      if (plans) {
-        plans.forEach((plan: any) => {
-          plansMap.set(plan._id.toString(), plan);
-        });
-      }
+      const plans = await this.prisma.plan.findMany();
+      const plansMap = new Map<string, (typeof plans)[number]>();
+      plans.forEach((plan) => {
+        plansMap.set(plan.id, plan);
+      });
 
       // Transform payments to invoice DTOs
-      const invoices: InvoiceDto[] = payments.map((payment: any) => {
-        const plan = plansMap.get(payment.planId);
+      const invoices: InvoiceDto[] = payments.map((payment) => {
+        const plan = plansMap.get(payment.planId || '');
 
         return {
-          id: payment._id?.toString(),
+          id: payment.id,
           planName: plan?.name || 'Unknown Plan',
-          amount: payment.amount,
+          amount: Number(payment.amount),
           duration: plan?.duration || 0,
           purchaseDate: payment.createdAt,
           status: payment.status,
           transactionId: payment.fapshiTransactionId,
-          email: payment.email,
-          phone: payment.phone,
+          email: payment.email || undefined,
+          phone: payment.phone || undefined,
           isGift: payment.isGift || false,
           recipientUsername: payment.recipientUsername || undefined,
-          activeRouter: payment.activeRouter || undefined,
+          activeRouter: payment.activeRouter ?? undefined,
         };
       });
 
@@ -101,7 +93,9 @@ export class BillingService {
     this.logger.log(`📊 Fetching billing stats for user: ${userId}`);
 
     try {
-      const payments = await this.paymentModel.find({ userId }).lean();
+      const payments = await this.prisma.payment.findMany({
+        where: { userId },
+      });
 
       if (!payments || payments.length === 0) {
         return {
@@ -116,36 +110,34 @@ export class BillingService {
         };
       }
 
-      const plans = await this.planModel.find().lean();
-      const plansMap = new Map();
-      if (plans) {
-        plans.forEach((plan: any) => {
-          plansMap.set(plan._id.toString(), plan);
-        });
-      }
+      const plans = await this.prisma.plan.findMany();
+      const plansMap = new Map<string, (typeof plans)[number]>();
+      plans.forEach((plan) => {
+        plansMap.set(plan.id, plan);
+      });
 
       const successfulPayments = payments.filter(
-        (p: any) => p.status === 'SUCCESSFUL',
+        (p) => p.status === 'SUCCESSFUL',
       );
-      const failedPayments = payments.filter((p: any) => p.status === 'FAILED');
+      const failedPayments = payments.filter((p) => p.status === 'FAILED');
       const giftsReceived = payments.filter(
-        (p: any) => p.isGift && p.recipientUsername === userId,
+        (p) => p.isGift && p.recipientUsername === userId,
       );
 
       let totalHoursPurchased = 0;
-      successfulPayments.forEach((payment: any) => {
-        const plan = plansMap.get(payment.planId);
+      successfulPayments.forEach((payment) => {
+        const plan = plansMap.get(payment.planId || '');
         if (plan) {
           totalHoursPurchased += plan.duration;
         }
       });
 
       const totalSpent = successfulPayments.reduce(
-        (sum, p: any) => sum + p.amount,
+        (sum, p) => sum + Number(p.amount),
         0,
       );
       const sortedByDate = [...payments].sort(
-        (a: any, b: any) =>
+        (a, b) =>
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
 

@@ -186,6 +186,7 @@ export class AuthController {
     }
     this.logger.log(`🔄 Checking for active session to reconnect...`);
     const reconnectionStatus = await this.paymentsService.reconnectUserIfNeeded(
+      req.tenantId,
       req.user._id,
     );
     this.logger.log(`🔄 Reconnection status:`, reconnectionStatus);
@@ -226,8 +227,10 @@ export class AuthController {
     description: 'Invalid input or user already exists',
   })
   @Post('register')
-  async register(@Body() body: SignupDto) {
-    this.logger.log(`📝 Registration attempt for user: ${body.username}`);
+  async register(@Body() body: SignupDto, @Request() req: any) {
+    this.logger.log(
+      `📝 Registration attempt for user: ${body.username} (Tenant: ${body.tenantId})`,
+    );
     if (body.macAddress) {
       this.logger.log(
         `   📌 WiFi Session: MAC=${body.macAddress}, Router=${body.routerIdentity || 'unknown'}`,
@@ -236,13 +239,16 @@ export class AuthController {
 
     try {
       const user = await this.usersService.create(
+        body.tenantId,
         body.username,
         body.password,
+        body.email,
         body.macAddress,
+        body.ipAddress,
         body.routerIdentity,
       );
       this.logger.log(
-        `✅ User registered successfully: ${body.username} (ID: ${user._id})`,
+        `✅ User registered successfully: ${body.username} (ID: ${user.id})`,
       );
 
       // Auto-login after registration to get token
@@ -280,11 +286,16 @@ export class AuthController {
     },
   })
   @Post('check-mac')
-  async checkMac(@Body() body: { mac: string }) {
-    this.logger.log(`📌 Checking MAC address status: ${body.mac}`);
+  async checkMac(@Body() body: { mac: string }, @Request() req: any) {
+    this.logger.log(
+      `📌 Checking MAC address status: ${body.mac} (Tenant: ${req.tenantId})`,
+    );
     try {
       // First try to find user with active session
-      const user = await this.usersService.findByMacWithActiveSession(body.mac);
+      const user = await this.usersService.findByMacWithActiveSession(
+        req.tenantId,
+        body.mac,
+      );
 
       if (user) {
         this.logger.log(
@@ -306,6 +317,7 @@ export class AuthController {
 
       // If no active user, check if there's a user with expired plan
       const expiredUser = await this.usersService.findByMacIncludingExpired(
+        req.tenantId,
         body.mac,
       );
       if (expiredUser) {

@@ -1,27 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Activity, ActivityDocument } from '../schemas/activity.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   ActivityDto,
   RecentActivityResponseDto,
   ActivityStatsDto,
 } from './dto/activity.dto';
-import { Plan, PlanDocument } from '../schemas/plan.schema';
 
 @Injectable()
 export class ActivitiesService {
   private readonly logger = new Logger(ActivitiesService.name);
 
-  constructor(
-    @InjectModel(Activity.name) private activityModel: Model<ActivityDocument>,
-    @InjectModel(Plan.name) private planModel: Model<PlanDocument>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Log a user activity
    */
   async logActivity(
+    tenantId: string,
     userId: string,
     action: string,
     category: string,
@@ -30,22 +25,23 @@ export class ActivitiesService {
     details?: Record<string, any>,
     ipAddress?: string,
     routing?: { routerIdentity?: string; sessionId?: string },
-  ): Promise<ActivityDocument> {
+  ) {
     try {
-      const activity = new this.activityModel({
-        userId,
-        action,
-        category,
-        description,
-        status,
-        details: details || {},
-        ipAddress,
-        routerIdentity: routing?.routerIdentity,
-        sessionId: routing?.sessionId,
-        timestamp: new Date(),
+      const activity = await this.prisma.activity.create({
+        data: {
+          tenantId,
+          userId: userId || null,
+          action,
+          category,
+          description,
+          status,
+          details: details || {},
+          ipAddress,
+          routerIdentity: routing?.routerIdentity,
+          sessionId: routing?.sessionId,
+        },
       });
 
-      await activity.save();
       this.logger.debug(`📝 Activity logged for user ${userId}: ${action}`);
       return activity;
     } catch (error) {
@@ -70,17 +66,19 @@ export class ActivitiesService {
       const skip = (page - 1) * pageSize;
 
       // Get total count
-      const total = await this.activityModel.countDocuments({ userId });
+      const total = await this.prisma.activity.count({
+        where: { userId },
+      });
 
       // Get paginated activities, sorted by most recent first
-      const activities = await this.activityModel
-        .find({ userId })
-        .sort({ timestamp: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .lean();
+      const activities = await this.prisma.activity.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+      });
 
-      if (!activities) {
+      if (!activities || activities.length === 0) {
         this.logger.log(`ℹ️ No activities found for user: ${userId}`);
         return {
           activities: [],
@@ -92,15 +90,15 @@ export class ActivitiesService {
       }
 
       // Transform to DTOs
-      const activityDtos: ActivityDto[] = activities.map((activity: any) => ({
-        id: activity._id?.toString(),
+      const activityDtos: ActivityDto[] = activities.map((activity) => ({
+        id: activity.id,
         action: activity.action,
         category: activity.category,
-        description: activity.description,
+        description: activity.description || '',
         status: activity.status,
         details: activity.details,
-        timestamp: activity.timestamp,
-        routerIdentity: activity.routerIdentity,
+        timestamp: activity.createdAt,
+        routerIdentity: activity.routerIdentity || undefined,
       }));
 
       const totalPages = Math.ceil(total / pageSize);
@@ -143,31 +141,34 @@ export class ActivitiesService {
       );
 
       // Get activities for this month
-      const monthActivities = await this.activityModel
-        .find({
+      const monthActivities = await this.prisma.activity.findMany({
+        where: {
           userId,
-          timestamp: { $gte: monthStart, $lte: monthEnd },
-        })
-        .lean();
+          createdAt: { gte: monthStart, lte: monthEnd },
+        },
+      });
 
       // Get successful and failed counts
       const successfulActionsThisMonth = monthActivities.filter(
-        (a: any) => a.status === 'success',
+        (a) => a.status === 'success',
       ).length;
       const failedActionsThisMonth = monthActivities.filter(
-        (a: any) => a.status === 'failed',
+        (a) => a.status === 'failed',
       ).length;
 
       // Get payment count
       const paymentsThisMonth = monthActivities.filter(
-        (a: any) => a.category === 'payment',
+        (a) => a.category === 'payment',
       ).length;
 
       // Calculate total hours from session-related activities
       let hoursServiceActiveThisMonth = 0;
-      monthActivities.forEach((activity: any) => {
-        if (activity.category === 'payment' && activity.details?.duration) {
-          hoursServiceActiveThisMonth += activity.details.duration;
+      monthActivities.forEach((activity) => {
+        if (
+          activity.category === 'payment' &&
+          (activity.details as any)?.duration
+        ) {
+          hoursServiceActiveThisMonth += (activity.details as any).duration;
         }
       });
 
@@ -206,26 +207,28 @@ export class ActivitiesService {
     try {
       const skip = (page - 1) * pageSize;
 
-      const total = await this.activityModel.countDocuments({
-        userId,
-        category,
+      const total = await this.prisma.activity.count({
+        where: {
+          userId,
+          category,
+        },
       });
-      const activities = await this.activityModel
-        .find({ userId, category })
-        .sort({ timestamp: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .lean();
+      const activities = await this.prisma.activity.findMany({
+        where: { userId, category },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+      });
 
-      const activityDtos: ActivityDto[] = activities.map((activity: any) => ({
-        id: activity._id?.toString(),
+      const activityDtos: ActivityDto[] = activities.map((activity) => ({
+        id: activity.id,
         action: activity.action,
         category: activity.category,
-        description: activity.description,
+        description: activity.description || '',
         status: activity.status,
         details: activity.details,
-        timestamp: activity.timestamp,
-        routerIdentity: activity.routerIdentity,
+        timestamp: activity.createdAt,
+        routerIdentity: activity.routerIdentity || undefined,
       }));
 
       const totalPages = Math.ceil(total / pageSize);

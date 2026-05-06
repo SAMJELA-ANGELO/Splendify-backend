@@ -8,6 +8,7 @@ import {
   Body,
   UseGuards,
   Logger,
+  Request,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -36,13 +37,13 @@ export class PlansController {
     schema: {
       example: [
         {
-          _id: '507f1f77bcf86cd799439011',
+          id: '507f1f77bcf86cd799439011',
           name: '100 CFA - 2 hours',
           price: 100,
           duration: 2,
         },
         {
-          _id: '507f1f77bcf86cd799439012',
+          id: '507f1f77bcf86cd799439012',
           name: '500 CFA - 24 hours',
           price: 500,
           duration: 24,
@@ -51,10 +52,12 @@ export class PlansController {
     },
   })
   @Get()
-  async getPlans() {
-    this.logger.log(`📋 Fetching all available plans`);
+  async getPlans(@Request() req: any) {
+    this.logger.log(
+      `📋 Fetching all available plans (Tenant: ${req.tenantId})`,
+    );
     try {
-      const plans = await this.plansService.findAll();
+      const plans = await this.plansService.findAll(req.tenantId);
       this.logger.log(`✅ Retrieved ${plans.length} plans`);
       return plans;
     } catch (error) {
@@ -74,7 +77,7 @@ export class PlansController {
     description: 'Plan details',
     schema: {
       example: {
-        _id: '507f1f77bcf86cd799439011',
+        id: '507f1f77bcf86cd799439011',
         name: '100 CFA - 2 hours',
         price: 100,
         duration: 2,
@@ -83,10 +86,12 @@ export class PlansController {
   })
   @ApiResponse({ status: 404, description: 'Plan not found' })
   @Get(':id')
-  async getPlan(@Param('id') id: string) {
-    this.logger.log(`📋 Fetching plan with ID: ${id}`);
+  async getPlan(@Param('id') id: string, @Request() req: any) {
+    this.logger.log(
+      `📋 Fetching plan with ID: ${id} (Tenant: ${req.tenantId})`,
+    );
     try {
-      const plan = await this.plansService.findById(id);
+      const plan = await this.plansService.findById(req.tenantId, id);
       this.logger.log(`✅ Plan retrieved: ${plan?.name} (ID: ${id})`);
       return plan;
     } catch (error) {
@@ -110,7 +115,7 @@ export class PlansController {
     description: 'Plan created successfully',
     schema: {
       example: {
-        _id: '507f1f77bcf86cd799439011',
+        id: '507f1f77bcf86cd799439011',
         name: '100 CFA - 2 hours',
         price: 100,
         duration: 2,
@@ -122,16 +127,20 @@ export class PlansController {
   @UseGuards(JwtAuthGuard, AdminGuard)
   @Post()
   async createPlan(
-    @Body() body: { name: string; price: number; duration: number },
+    @Body()
+    body: {
+      name: string;
+      price: number;
+      duration: number;
+    },
+    @Request() req: any,
   ) {
     this.logger.log(
-      `➕ Creating new plan: ${body.name} (Price: ${body.price}, Duration: ${body.duration}h)`,
+      `➕ Creating new plan: ${body.name} (Price: ${body.price}, Duration: ${body.duration}h) (Tenant: ${req.tenantId})`,
     );
     try {
-      const plan = await this.plansService.create(body);
-      this.logger.log(
-        `✅ Plan created successfully with ID: ${(plan as any)._id}`,
-      );
+      const plan = await this.plansService.create(req.tenantId, body);
+      this.logger.log(`✅ Plan created successfully with ID: ${plan.id}`);
       return plan;
     } catch (error: any) {
       this.logger.error(
@@ -161,7 +170,7 @@ export class PlansController {
     description: 'Plan updated successfully',
     schema: {
       example: {
-        _id: '507f1f77bcf86cd799439011',
+        id: '507f1f77bcf86cd799439011',
         name: 'Updated Plan Name',
         price: 150,
         duration: 3,
@@ -175,15 +184,21 @@ export class PlansController {
   @Put(':id')
   async updatePlan(
     @Param('id') id: string,
-    @Body() body: Partial<{ name: string; price: number; duration: number }>,
+    @Body()
+    body: Partial<{
+      name: string;
+      price: number;
+      duration: number;
+    }>,
+    @Request() req: any,
   ) {
     this.logger.log(
-      `✏️ Updating plan ${id} with data: ${JSON.stringify(body)}`,
+      `✏️ Updating plan ${id} with data: ${JSON.stringify(body)} (Tenant: ${req.tenantId})`,
     );
     try {
-      const plan = await this.plansService.update(id, body);
+      const plan = await this.plansService.update(req.tenantId, id, body);
       if (plan) {
-        this.logger.log(`✅ Plan updated successfully: ${(plan as any)._id}`);
+        this.logger.log(`✅ Plan updated successfully: ${plan.id}`);
       } else {
         this.logger.error(`❌ Plan not found for update: ${id}`);
       }
@@ -206,10 +221,12 @@ export class PlansController {
   @ApiSecurity('JWT')
   @UseGuards(JwtAuthGuard, AdminGuard)
   @Delete(':id')
-  async deletePlan(@Param('id') id: string) {
-    this.logger.log(`🗑️ Deleting plan with ID: ${id}`);
+  async deletePlan(@Param('id') id: string, @Request() req: any) {
+    this.logger.log(
+      `🗑️ Deleting plan with ID: ${id} (Tenant: ${req.tenantId})`,
+    );
     try {
-      const result = await this.plansService.delete(id);
+      const result = await this.plansService.delete(req.tenantId, id);
       this.logger.log(`✅ Plan deleted successfully: ${id}`);
       return result;
     } catch (error) {

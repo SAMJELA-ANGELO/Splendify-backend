@@ -40,16 +40,22 @@ export class UsersController {
     description: 'Invalid input or user already exists',
   })
   @Post('signup')
-  async signup(@Body() body: SignupDto) {
-    this.logger.log(`👤 User signup requested for username: ${body.username}`);
+  async signup(@Body() body: SignupDto, @Request() req: any) {
+    this.logger.log(
+      `👤 User signup requested for username: ${body.username} (Tenant: ${body.tenantId})`,
+    );
     try {
-      const user = await this.usersService.create(body.username, body.password);
+      const user = await this.usersService.create(
+        body.tenantId,
+        body.username,
+        body.password,
+      );
       this.logger.log(
-        `✅ User created successfully with ID: ${user._id?.toString()}, Username: ${user.username}`,
+        `✅ User created successfully with ID: ${user.id}, Username: ${user.username}`,
       );
       return {
         message: 'User created',
-        user: { id: user._id?.toString(), username: user.username },
+        user: { id: user.id, username: user.username },
       };
     } catch (error) {
       this.logger.error(

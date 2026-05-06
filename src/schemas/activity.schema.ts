@@ -6,6 +6,9 @@ export type ActivityDocument = Activity & Document;
 @Schema()
 export class Activity {
   @Prop({ required: true })
+  tenantId: string; // Multi-tenant support
+
+  @Prop({ required: true })
   userId: string;
 
   @Prop({ required: true })

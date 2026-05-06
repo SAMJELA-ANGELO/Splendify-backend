@@ -1,9 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { Cron } from '@nestjs/schedule';
-import { Payment, PaymentDocument } from '../schemas/payment.schema';
-import { User, UserDocument } from '../schemas/user.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import { PaymentNotificationsService } from './payment-notifications.service';
 import { PlansService } from '../plans/plans.service';
 
@@ -12,8 +9,7 @@ export class PaymentStatusNotificationService {
   private readonly logger = new Logger(PaymentStatusNotificationService.name);
 
   constructor(
-    @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private prisma: PrismaService,
     private paymentNotificationsService: PaymentNotificationsService,
     private plansService: PlansService,
   ) {}
@@ -39,27 +35,24 @@ export class PaymentStatusNotificationService {
       };
 
       // Find all payments that need notifications
-      const paymentsNeedingNotification = await this.paymentModel
-        .find({
-          $or: [
+      const paymentsNeedingNotification = await this.prisma.payment.findMany({
+        where: {
+          OR: [
             {
-              // Payment just initiated (created status, no notification sent)
               status: 'created',
               notificationInitiatedSent: null,
             },
             {
-              // Payment became successful
               status: 'SUCCESSFUL',
               notificationSuccessSent: null,
             },
             {
-              // Payment failed
               status: 'FAILED',
               notificationFailedSent: null,
             },
           ],
-        })
-        .exec();
+        },
+      });
 
       if (paymentsNeedingNotification.length === 0) {
         const elapsed = Date.now() - startTime;
@@ -73,7 +66,11 @@ export class PaymentStatusNotificationService {
 
       // Process each payment
       for (const payment of paymentsNeedingNotification) {
-        const user = await this.userModel.findById(payment.userId).exec();
+        const user = payment.userId
+          ? await this.prisma.user.findUnique({
+              where: { id: payment.userId },
+            })
+          : null;
         if (!user) {
           this.logger.warn(
             `  ⚠️ User not found for payment: ${payment.fapshiTransactionId}`,
@@ -82,55 +79,69 @@ export class PaymentStatusNotificationService {
         }
 
         // Get plan details
-        const plan = await this.plansService.findById(payment.planId);
+        const plan = payment.planId
+          ? await this.plansService.findById(payment.tenantId, payment.planId)
+          : null;
 
         switch (payment.status) {
           case 'created':
             // Payment just initiated
-            this.logger.log(
-              `  📧 Initiated notification for: ${user.username}`,
-            );
-            await this.paymentNotificationsService.sendPaymentInitiatedNotification(
-              payment.userId,
-              payment,
-              payment.amount,
-              payment.phone || 'Unknown phone',
-            );
-            await this.paymentModel.findByIdAndUpdate(payment._id, {
-              notificationInitiatedSent: now,
+            if (payment.userId) {
+              this.logger.log(
+                `  📧 Initiated notification for: ${user.username}`,
+              );
+              await this.paymentNotificationsService.sendPaymentInitiatedNotification(
+                payment.userId,
+                payment,
+                Number(payment.amount),
+                payment.phone || 'Unknown phone',
+              );
+            }
+            await this.prisma.payment.update({
+              where: { id: payment.id },
+              data: { notificationInitiatedSent: now },
             });
             notificationsCounted.initiated++;
             break;
 
           case 'SUCCESSFUL':
             // Payment succeeded - activate user
-            this.logger.log(`  ✅ Success notification for: ${user.username}`);
-            await this.paymentNotificationsService.sendPaymentSuccessNotification(
-              payment.userId,
-              payment,
-              payment.amount,
-              plan?.name || 'Bundle',
-              plan?.duration || 0,
-            );
-            await this.paymentModel.findByIdAndUpdate(payment._id, {
-              notificationSuccessSent: now,
+            if (payment.userId) {
+              this.logger.log(
+                `  ✅ Success notification for: ${user.username}`,
+              );
+              await this.paymentNotificationsService.sendPaymentSuccessNotification(
+                payment.userId,
+                payment,
+                Number(payment.amount),
+                plan?.name || 'Bundle',
+                plan?.duration || 0,
+              );
+            }
+            await this.prisma.payment.update({
+              where: { id: payment.id },
+              data: { notificationSuccessSent: now },
             });
             notificationsCounted.successful++;
             break;
 
           case 'FAILED':
             // Payment failed
-            this.logger.log(`  ❌ Failed notification for: ${user.username}`);
-            const failureReason =
-              payment.fapshiResponse?.message || 'Payment was declined';
-            await this.paymentNotificationsService.sendPaymentFailedNotification(
-              payment.userId,
-              payment,
-              payment.amount,
-              failureReason,
-            );
-            await this.paymentModel.findByIdAndUpdate(payment._id, {
-              notificationFailedSent: now,
+            if (payment.userId) {
+              this.logger.log(`  ❌ Failed notification for: ${user.username}`);
+              const failureReason =
+                (payment.fapshiResponse as any)?.message ||
+                'Payment was declined';
+              await this.paymentNotificationsService.sendPaymentFailedNotification(
+                payment.userId,
+                payment,
+                Number(payment.amount),
+                failureReason,
+              );
+            }
+            await this.prisma.payment.update({
+              where: { id: payment.id },
+              data: { notificationFailedSent: now },
             });
             notificationsCounted.failed++;
             break;
@@ -159,10 +170,13 @@ export class PaymentStatusNotificationService {
       this.logger.log(
         `🔄 Resetting payment notification flags for: ${paymentId}`,
       );
-      await this.paymentModel.findByIdAndUpdate(paymentId, {
-        notificationInitiatedSent: null,
-        notificationSuccessSent: null,
-        notificationFailedSent: null,
+      await this.prisma.payment.update({
+        where: { id: paymentId },
+        data: {
+          notificationInitiatedSent: null,
+          notificationSuccessSent: null,
+          notificationFailedSent: null,
+        },
       });
       this.logger.log(`✅ Payment notification flags reset for: ${paymentId}`);
     } catch (error: any) {

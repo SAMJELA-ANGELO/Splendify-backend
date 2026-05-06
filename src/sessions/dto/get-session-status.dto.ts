@@ -10,10 +10,18 @@ export class GetSessionStatusResponseDto {
 
   @ApiProperty({
     description:
-      'Remaining time in the session (in milliseconds). Only present if session is active.',
-    example: 3600000,
+      'Remaining time in the session (in seconds). Only present if session is active.',
+    example: 86400,
     type: 'number',
     nullable: true,
   })
   remainingTime?: number;
+
+  @ApiProperty({
+    description: 'Session ID if active (for CoA or session management)',
+    example: 'clp7h8k9m0n1o2p3q4r5s6t7u8',
+    type: 'string',
+    nullable: true,
+  })
+  sessionId?: string;
 }

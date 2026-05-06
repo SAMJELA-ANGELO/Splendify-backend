@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { User, UserDocument } from '../schemas/user.schema';
+import { Prisma, User as PrismaUser } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
 import * as bcrypt from 'bcrypt';
 
@@ -10,19 +9,22 @@ export class UsersService {
   private logger = new Logger('UsersService');
 
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private prisma: PrismaService,
     private mikrotikService: MikrotikService,
   ) {}
 
   async create(
+    tenantId: string,
     username: string,
     password: string,
+    email?: string,
     macAddress?: string,
     ipAddress?: string,
     routerIdentity?: string,
-  ): Promise<UserDocument> {
+    role: string = 'CUSTOMER',
+  ): Promise<PrismaUser> {
     this.logger.log(
-      `👤 Starting user creation process for username: ${username}`,
+      `👤 Starting user creation process for username: ${username} (Tenant: ${tenantId}, Role: ${role})`,
     );
     if (macAddress) {
       this.logger.log(`   📌 MAC Address: ${macAddress}`);
@@ -35,35 +37,40 @@ export class UsersService {
     }
 
     try {
-      // Step 1: Create user on MikroTik with plain password FIRST
-      // This happens before hashing so we use the original password
-      this.logger.log(`  1️⃣ Creating MikroTik hotspot user: ${username}`);
-      await this.mikrotikService.createUser(username, password);
-      this.logger.log(`  ✅ MikroTik hotspot user created: ${username}`);
+      // Only create MikroTik user for CUSTOMER role
+      if (role === 'CUSTOMER') {
+        this.logger.log(`  1️⃣ Creating MikroTik hotspot user: ${username}`);
+        await this.mikrotikService.createUser(username, password);
+        this.logger.log(`  ✅ MikroTik hotspot user created: ${username}`);
+      } else {
+        this.logger.log(`  1️⃣ Skipping MikroTik user creation for role: ${role}`);
+      }
 
-      // Step 2: Hash password for MongoDB storage
-      this.logger.log(`  2️⃣ Hashing password for MongoDB storage`);
+      this.logger.log(`  2️⃣ Hashing password for database storage`);
       const hashedPassword = await bcrypt.hash(password, 10);
       this.logger.log(`  ✅ Password hashed successfully`);
 
-      // Step 3: Create user in MongoDB with device info and mikrotikCreated flag
-      this.logger.log(`  3️⃣ Creating user record in MongoDB`);
-      const user = new this.userModel({
-        username,
-        password: hashedPassword,
-        mikrotikCreated: true,
-        macAddress: macAddress || null,
-        ipAddress: ipAddress || null,
-        routerIdentity: routerIdentity || null,
-        isActive: false, // User is NOT activated until payment
+      this.logger.log(`  3️⃣ Creating user record in PostgreSQL via Prisma`);
+      const savedUser = await this.prisma.user.create({
+        data: {
+          tenantId,
+          username,
+          email: email || null,
+          password: hashedPassword,
+          role,
+          mikrotikCreated: role === 'CUSTOMER',
+          macAddress: macAddress || null,
+          ipAddress: ipAddress || null,
+          routerIdentity: routerIdentity || null,
+          isActive: role !== 'CUSTOMER', // ISP_ADMIN and SUPER_ADMIN active by default
+        },
       });
-      const savedUser = await user.save();
+
       this.logger.log(
-        `✅ User created successfully: ${username} (ID: ${savedUser._id}, MikroTik: ✓, MAC: ${macAddress || 'null'}, IP: ${ipAddress || 'null'})`,
+        `✅ User created successfully: ${username} (ID: ${savedUser.id}, Tenant: ${tenantId}, Role: ${role}, MikroTik: ${role === 'CUSTOMER' ? '✓' : '✗'}, MAC: ${macAddress || 'null'}, IP: ${ipAddress || 'null'})`,
       );
       return savedUser;
     } catch (error: any) {
-      // If MikroTik creation fails, don't create MongoDB user
       this.logger.error(
         `❌ Failed to create user ${username}: ${error.message}`,
       );
@@ -71,20 +78,120 @@ export class UsersService {
     }
   }
 
-  async findByUsername(username: string): Promise<User | null> {
-    this.logger.log(`🔍 Finding user by username: ${username}`);
-    const user = await this.userModel.findOne({ username }).exec();
+  async createSuperAdmin(
+    username: string,
+    password: string,
+    email: string,
+  ): Promise<PrismaUser> {
+    this.logger.log(`👤 Creating SUPER_ADMIN user: ${username}`);
+
+    try {
+      this.logger.log(`  1️⃣ Hashing password for database storage`);
+      const hashedPassword = await bcrypt.hash(password, 10);
+      this.logger.log(`  ✅ Password hashed successfully`);
+
+      this.logger.log(`  2️⃣ Creating SUPER_ADMIN user record in PostgreSQL`);
+      const savedUser = await this.prisma.user.create({
+        data: {
+          tenantId: null, // SUPER_ADMIN has no tenant
+          username,
+          email,
+          password: hashedPassword,
+          role: 'SUPER_ADMIN',
+          isActive: true, // Super admins are active by default
+          mikrotikCreated: false,
+        },
+      });
+
+      this.logger.log(
+        `✅ SUPER_ADMIN created successfully: ${username} (ID: ${savedUser.id}, Email: ${email})`,
+      );
+      return savedUser;
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Failed to create SUPER_ADMIN ${username}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  async findByIdentifier(
+    tenantId: string,
+    identifier: string,
+  ): Promise<PrismaUser | null> {
+    this.logger.log(
+      `🔍 Finding user by identifier: ${identifier} (Tenant: ${tenantId})`,
+    );
+    const user = await this.prisma.user.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { username: identifier },
+          { email: identifier },
+        ],
+      },
+    });
     if (user) {
-      this.logger.log(`✅ User found: ${username} (ID: ${user._id})`);
+      this.logger.log(`✅ User found: ${user.username} (ID: ${user.id})`);
+    } else {
+      this.logger.warn(`⚠️ User not found: ${identifier}`);
+    }
+    return user;
+  }
+
+  async findByUsername(
+    tenantId: string,
+    username: string,
+  ): Promise<PrismaUser | null> {
+    this.logger.log(
+      `🔍 Finding user by username: ${username} (Tenant: ${tenantId})`,
+    );
+    const user = await this.prisma.user.findUnique({
+      where: {
+        tenantId_username: {
+          tenantId,
+          username,
+        },
+      },
+    });
+    if (user) {
+      this.logger.log(`✅ User found: ${username} (ID: ${user.id})`);
     } else {
       this.logger.warn(`⚠️ User not found: ${username}`);
     }
     return user;
   }
 
-  async findById(id: string): Promise<User | null> {
-    this.logger.log(`🔍 Finding user by ID: ${id}`);
-    const user = await this.userModel.findById(id).exec();
+  async findByIdentifierAnyTenant(identifier: string): Promise<PrismaUser | null> {
+    this.logger.log(
+      `🔍 Finding user by identifier across all tenants: ${identifier}`,
+    );
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: identifier },
+          { email: identifier },
+        ],
+      },
+    });
+    if (user) {
+      this.logger.log(
+        `✅ User found: ${user.username} (ID: ${user.id}, Tenant: ${user.tenantId})`,
+      );
+    } else {
+      this.logger.warn(`⚠️ User not found: ${identifier}`);
+    }
+    return user;
+  }
+
+  async findById(tenantId: string, id: string): Promise<PrismaUser | null> {
+    this.logger.log(`🔍 Finding user by ID: ${id} (Tenant: ${tenantId})`);
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id,
+        tenantId,
+      },
+    });
     if (user) {
       this.logger.log(`✅ User found by ID: ${user.username}`);
     } else {
@@ -93,16 +200,35 @@ export class UsersService {
     return user;
   }
 
-  async updateUser(id: string, update: Partial<User>): Promise<User | null> {
-    this.logger.log(`✏️ Updating user ${id} with: ${JSON.stringify(update)}`);
-    const updatedUser = await this.userModel
-      .findByIdAndUpdate(id, update, { new: true })
-      .exec();
-    if (updatedUser) {
-      this.logger.log(`✅ User updated successfully: ${updatedUser.username}`);
-    } else {
-      this.logger.error(`❌ Failed to update user: ${id}`);
+  async updateUser(
+    tenantId: string,
+    id: string,
+    updateData: Partial<Prisma.UserUncheckedUpdateInput>,
+  ): Promise<PrismaUser | null> {
+    this.logger.log(
+      `✏️ Updating user ${id} with: ${JSON.stringify(updateData)} (Tenant: ${tenantId})`,
+    );
+
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        id,
+        tenantId,
+      },
+    });
+
+    if (!existingUser) {
+      this.logger.error(
+        `❌ Failed to update user: ${id} (not found in tenant ${tenantId})`,
+      );
+      return null;
     }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id },
+      data: updateData,
+    });
+
+    this.logger.log(`✅ User updated successfully: ${updatedUser.username}`);
     return updatedUser;
   }
 
@@ -120,38 +246,50 @@ export class UsersService {
     return isValid;
   }
 
-  async findByMacWithActiveSession(macAddress: string): Promise<User | null> {
-    this.logger.log(`📌 Checking for active user with MAC: ${macAddress}`);
+  async findByMacWithActiveSession(
+    tenantId: string,
+    macAddress: string,
+  ): Promise<PrismaUser | null> {
+    this.logger.log(
+      `📌 Checking for active user with MAC: ${macAddress} (Tenant: ${tenantId})`,
+    );
 
-    const user = await this.userModel
-      .findOne({
-        macAddress: macAddress,
+    const user = await this.prisma.user.findFirst({
+      where: {
+        tenantId,
+        macAddress,
         isActive: true,
-        sessionExpiry: { $gt: new Date() }, // Session not expired
-      })
-      .exec();
+        sessionExpiry: {
+          gt: new Date(),
+        },
+      },
+    });
 
     if (user) {
       this.logger.log(
         `✅ Active user found with MAC ${macAddress}: ${user.username} (expires: ${user.sessionExpiry})`,
       );
       return user;
-    } else {
-      this.logger.warn(`⚠️ No active user found with MAC: ${macAddress}`);
-      return null;
     }
+
+    this.logger.warn(`⚠️ No active user found with MAC: ${macAddress}`);
+    return null;
   }
 
-  async findByMacIncludingExpired(macAddress: string): Promise<User | null> {
+  async findByMacIncludingExpired(
+    tenantId: string,
+    macAddress: string,
+  ): Promise<PrismaUser | null> {
     this.logger.log(
-      `📌 Checking for user with MAC (including expired): ${macAddress}`,
+      `📌 Checking for user with MAC (including expired): ${macAddress} (Tenant: ${tenantId})`,
     );
 
-    const user = await this.userModel
-      .findOne({
-        macAddress: macAddress,
-      })
-      .exec();
+    const user = await this.prisma.user.findFirst({
+      where: {
+        tenantId,
+        macAddress,
+      },
+    });
 
     if (user) {
       const isExpired =
@@ -162,9 +300,9 @@ export class UsersService {
         `${isExpired ? '⚠️' : '✅'} User found with MAC ${macAddress}: ${user.username} (expired: ${isExpired})`,
       );
       return user;
-    } else {
-      this.logger.warn(`⚠️ No user found with MAC: ${macAddress}`);
-      return null;
     }
+
+    this.logger.warn(`⚠️ No user found with MAC: ${macAddress}`);
+    return null;
   }
 }

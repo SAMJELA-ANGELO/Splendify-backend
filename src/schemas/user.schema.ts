@@ -5,6 +5,9 @@ export type UserDocument = User & Document;
 
 @Schema()
 export class User {
+  @Prop({ required: true })
+  tenantId: string; // Multi-tenant support
+
   @Prop({ required: true, unique: true })
   username: string;
 
@@ -58,4 +61,7 @@ export class User {
   updatedAt?: Date;
 }
 
-export const UserSchema = SchemaFactory.createForClass(User).set('timestamps', true);
+export const UserSchema = SchemaFactory.createForClass(User).set(
+  'timestamps',
+  true,
+);

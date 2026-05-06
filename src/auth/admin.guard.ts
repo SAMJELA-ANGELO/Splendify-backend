@@ -23,9 +23,15 @@ export class AdminGuard implements CanActivate {
       throw new ForbiddenException('Access denied: admin credentials required');
     }
 
-    if (user.username !== 'splendid') {
+    const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+    const isAdminUser =
+      user.username === adminUsername ||
+      user.username === 'splendid' ||
+      user.role === 'SUPER_ADMIN';
+
+    if (!isAdminUser) {
       this.logger.warn(
-        `AdminGuard - User ${user.username} is not admin (splendid)`,
+        `AdminGuard - User ${user.username} is not authorized as admin`,
       );
       throw new ForbiddenException(
         'Access denied: only admin can access this endpoint',

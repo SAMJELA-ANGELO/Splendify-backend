@@ -1,19 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Payment, PaymentDocument } from '../schemas/payment.schema';
+import { Prisma, Payment as PrismaPayment } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { PlansService } from '../plans/plans.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
 import { ActivitiesService } from '../activities/activities.service';
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
+import { tryDecryptSecret } from '../common/encryption.util';
+import { parsePhoneNumber } from 'libphonenumber-js';
 
 @Injectable()
 export class PaymentsService {
   private logger = new Logger('PaymentsService');
   constructor(
-    @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
+    private prisma: PrismaService,
     private usersService: UsersService,
     private plansService: PlansService,
     private mikrotikService: MikrotikService,
@@ -22,6 +23,7 @@ export class PaymentsService {
   ) {}
 
   async initiatePayment(
+    tenantId: string,
     userId: string,
     planId: string,
     email?: string,
@@ -35,10 +37,70 @@ export class PaymentsService {
     userIp?: string,
     password?: string,
   ) {
-    this.logger.log(`💶 Initiating payment for user ${userId}, plan ${planId}`);
+    this.logger.log(
+      `💶 Initiating payment for user ${userId}, plan ${planId} (Tenant: ${tenantId})`,
+    );
+
+    // Transaction Lock: Check for existing pending transactions
+    if (phone || macAddress) {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+      const existingPending = await this.prisma.payment.findFirst({
+        where: {
+          status: 'pending',
+          createdAt: {
+            gte: tenMinutesAgo,
+          },
+          OR: [
+            ...(phone ? [{ phone }] : []),
+            ...(macAddress ? [{ macAddress }] : []),
+          ],
+        },
+      });
+      if (existingPending) {
+        throw new Error(
+          'Please complete or cancel your existing payment attempt before starting a new one.',
+        );
+      }
+    }
+
+    // Phone Number Validation and Strike System
+    if (phone) {
+      // Validate phone number format
+      const { parsePhoneNumber } = await import('libphonenumber-js');
+      const phoneNumber = parsePhoneNumber(phone, 'CM');
+      if (!phoneNumber.isValid() || phoneNumber.country !== 'CM') {
+        throw new Error('Phone number must be a valid Cameroon number (+237... or 6...)');
+      }
+
+      // Check for strike system: if MAC address has used 3 different phones in 1 hour
+      if (macAddress) {
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const recentPayments = await this.prisma.payment.findMany({
+          where: {
+            macAddress,
+            createdAt: { gte: oneHourAgo },
+          },
+          select: { phone: true },
+        });
+        const uniquePhones = new Set(recentPayments.map(p => p.phone).filter(Boolean));
+        if (uniquePhones.size >= 3 && !uniquePhones.has(phone)) {
+          // Blacklist the MAC address for 24 hours
+          await this.prisma.blacklist.create({
+            data: {
+              type: 'MAC',
+              value: macAddress,
+              reason: 'Multiple phone numbers used within 1 hour',
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            },
+          });
+          throw new Error('Device has been temporarily blocked due to suspicious activity');
+        }
+      }
+    }
+
     try {
       this.logger.log(`  1️⃣ Fetching plan: ${planId}`);
-      const plan = await this.plansService.findById(planId);
+      const plan = await this.plansService.findById(tenantId, planId);
       if (!plan) throw new Error('Plan not found');
       this.logger.log(
         `  ✅ Plan found: ${plan.name} (${plan.price} XAF, ${plan.duration}h)`,
@@ -47,18 +109,59 @@ export class PaymentsService {
       // Validation
       if (!phone)
         throw new Error('Phone number is required for direct payment');
-      if (!Number.isInteger(plan.price)) {
+      const planAmount = Number(plan.price);
+      if (!Number.isInteger(planAmount)) {
         throw new Error('Amount must be an integer');
       }
-      if (plan.price < 100) {
+      if (planAmount < 100) {
         throw new Error('Amount cannot be less than 100 XAF');
       }
       this.logger.log(`  ✅ Validation passed`);
 
       // Build request payload for directPay
       this.logger.log(`  2️⃣ Building Fapshi payment request for ${phone}`);
+
+      // HYBRID BILLING: Load tenant payment configuration
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+      });
+      if (!tenant) throw new Error('Tenant not found');
+
+      const paymentModel = tenant.paymentModel;
+      this.logger.log(`  🏢 Effective payment model: ${paymentModel}`);
+
+      // Select API credentials based on payment model
+      let fapshiApiKey: string;
+      let fapshiApiUser: string;
+      let fapshiBaseUrl: string;
+
+      if (paymentModel === 'DIRECT') {
+        // DIRECT mode: Use ISP's own Fapshi API keys
+        const apiKey = tryDecryptSecret(tenant.fapshiApiKey || null);
+        const apiUser = tryDecryptSecret(tenant.fapshiServiceId || null);
+        if (!apiKey || !apiUser) {
+          throw new Error(
+            'DIRECT payment mode requires Fapshi API configuration. Please contact support.',
+          );
+        }
+        fapshiApiKey = apiKey;
+        fapshiApiUser = apiUser; // ServiceId acts as API user in DIRECT mode
+        fapshiBaseUrl = this.configService.get<string>('FAPSHI_BASE_URL') || '';
+        this.logger.log(`  💳 DIRECT MODE: Using tenant's Fapshi API keys`);
+      } else {
+        // ESCROW mode: Use XenFi master account
+        fapshiApiKey = this.configService.get<string>('FAPSHI_APIKEY') || '';
+        fapshiApiUser = this.configService.get<string>('FAPSHI_APIUSER') || '';
+        fapshiBaseUrl = this.configService.get<string>('FAPSHI_BASE_URL') || '';
+        this.logger.log(`  🏦 ESCROW MODE: Using XenFi master account`);
+      }
+
+      if (!fapshiApiKey || !fapshiApiUser || !fapshiBaseUrl) {
+        throw new Error('Missing Fapshi API configuration');
+      }
+
       const paymentData: any = {
-        amount: plan.price + plan.price * 0.04, // Add 4% fee
+        amount: planAmount + planAmount * 0.04, // Add 4% fee
         phone: phone,
         userId: userId,
       };
@@ -83,13 +186,13 @@ export class PaymentsService {
       // Call Fapshi API directPay endpoint (sends payment to mobile)
       this.logger.log(`  3️⃣ Calling Fapshi direct-pay API`);
       const fapshiResponse = await axios.post(
-        `${this.configService.get('FAPSHI_BASE_URL')}/direct-pay`,
+        `${fapshiBaseUrl}/direct-pay`,
         paymentData,
         {
           headers: {
             'Content-Type': 'application/json',
-            apiuser: this.configService.get('FAPSHI_APIUSER'),
-            apikey: this.configService.get('FAPSHI_APIKEY'),
+            apiuser: fapshiApiUser,
+            apikey: fapshiApiKey,
           },
           timeout: 10000,
         },
@@ -99,25 +202,30 @@ export class PaymentsService {
       );
 
       // Create and save payment record
-      this.logger.log(`  4️⃣ Saving payment record to MongoDB`);
-      const payment = new this.paymentModel({
-        userId,
-        planId,
-        amount: plan.price,
-        email,
-        phone,
-        externalId,
-        macAddress,
-        routerIdentity,
-        userIp,
-        password,
-        isGift: isGift || false,
-        recipientUsername: recipientUsername || null,
-        status: (fapshiResponse.data.status || 'created').toLowerCase(),
-        fapshiTransactionId: fapshiResponse.data.transId,
-        fapshiResponse: fapshiResponse.data,
+      this.logger.log(`  4️⃣ Saving payment record to PostgreSQL`);
+      const grossAmount = planAmount + planAmount * 0.04; // Amount with fees
+      const payment = await this.prisma.payment.create({
+        data: {
+          tenantId,
+          userId,
+          planId,
+          amount: planAmount,
+          grossAmount: grossAmount,
+          email,
+          phone,
+          externalId,
+          macAddress,
+          routerIdentity,
+          userIp,
+          password,
+          isGift: isGift || false,
+          recipientUsername: recipientUsername || null,
+          status: (fapshiResponse.data.status || 'created').toLowerCase(),
+          fapshiTransactionId: fapshiResponse.data.transId,
+          fapshiResponse: fapshiResponse.data,
+          paymentModel,
+        },
       });
-      await payment.save();
 
       if (macAddress) this.logger.log(`  📌 MAC address saved: ${macAddress}`);
       if (userIp) this.logger.log(`  🌐 User IP saved: ${userIp}`);
@@ -154,7 +262,7 @@ export class PaymentsService {
         });
 
       return {
-        paymentId: payment._id,
+        paymentId: payment.id,
         transId: fapshiResponse.data.transId,
         message:
           'Payment request sent to your mobile phone. Please complete payment on your device.',
@@ -175,33 +283,60 @@ export class PaymentsService {
         if (fapshiError.message) {
           const errorMsg = fapshiError.message.toLowerCase();
 
-          if (errorMsg.includes('invalid phone') || errorMsg.includes('phone number')) {
-            userFriendlyMessage = 'Invalid phone number. Please check the format and try again.';
-          } else if (errorMsg.includes('insufficient balance') || errorMsg.includes('balance')) {
-            userFriendlyMessage = 'Insufficient account balance. Please top up and try again.';
-          } else if (errorMsg.includes('unauthorized') || errorMsg.includes('authentication')) {
-            userFriendlyMessage = 'Payment service temporarily unavailable. Please try again later.';
-          } else if (errorMsg.includes('timeout') || errorMsg.includes('network')) {
-            userFriendlyMessage = 'Payment request timed out. Please check your connection and try again.';
-          } else if (errorMsg.includes('amount') && errorMsg.includes('invalid')) {
-            userFriendlyMessage = 'Invalid payment amount. Please select a valid plan.';
+          if (
+            errorMsg.includes('invalid phone') ||
+            errorMsg.includes('phone number')
+          ) {
+            userFriendlyMessage =
+              'Invalid phone number. Please check the format and try again.';
+          } else if (
+            errorMsg.includes('insufficient balance') ||
+            errorMsg.includes('balance')
+          ) {
+            userFriendlyMessage =
+              'Insufficient account balance. Please top up and try again.';
+          } else if (
+            errorMsg.includes('unauthorized') ||
+            errorMsg.includes('authentication')
+          ) {
+            userFriendlyMessage =
+              'Payment service temporarily unavailable. Please try again later.';
+          } else if (
+            errorMsg.includes('timeout') ||
+            errorMsg.includes('network')
+          ) {
+            userFriendlyMessage =
+              'Payment request timed out. Please check your connection and try again.';
+          } else if (
+            errorMsg.includes('amount') &&
+            errorMsg.includes('invalid')
+          ) {
+            userFriendlyMessage =
+              'Invalid payment amount. Please select a valid plan.';
           } else {
             // Use Fapshi's message if it's user-friendly, otherwise use generic
-            userFriendlyMessage = fapshiError.message.length < 100 ? fapshiError.message : userFriendlyMessage;
+            userFriendlyMessage =
+              fapshiError.message.length < 100
+                ? fapshiError.message
+                : userFriendlyMessage;
           }
         } else if (fapshiError.error) {
           // Some Fapshi errors have an 'error' field
           const errorMsg = fapshiError.error.toLowerCase();
           if (errorMsg.includes('phone')) {
-            userFriendlyMessage = 'Invalid phone number format. Please use a valid Cameroon mobile number.';
+            userFriendlyMessage =
+              'Invalid phone number format. Please use a valid Cameroon mobile number.';
           } else if (errorMsg.includes('amount')) {
-            userFriendlyMessage = 'Invalid payment amount. Please select a different plan.';
+            userFriendlyMessage =
+              'Invalid payment amount. Please select a different plan.';
           }
         }
       } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-        userFriendlyMessage = 'Payment service is currently unavailable. Please try again in a few minutes.';
+        userFriendlyMessage =
+          'Payment service is currently unavailable. Please try again in a few minutes.';
       } else if (error.code === 'ETIMEDOUT') {
-        userFriendlyMessage = 'Payment request timed out. Please check your internet connection and try again.';
+        userFriendlyMessage =
+          'Payment request timed out. Please check your internet connection and try again.';
       }
 
       // Create a new error with user-friendly message
@@ -209,6 +344,104 @@ export class PaymentsService {
       userError.name = 'PaymentError';
       throw userError;
     }
+  }
+
+  async initiateTenantSubscriptionPayment(
+    tenantId: string,
+    optionId: string,
+    amount: number,
+    phone: string,
+    email?: string,
+    externalId?: string,
+    name?: string,
+    userIp?: string,
+    tenantSubscriptionId?: string,
+  ) {
+    this.logger.log(
+      `💳 Initiating tenant subscription payment for tenant ${tenantId} and option ${optionId}`,
+    );
+
+    if (!phone) {
+      throw new Error(
+        'Phone number is required for tenant subscription payment',
+      );
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    if (!tenant) {
+      throw new Error('Tenant not found');
+    }
+
+    const option = await this.prisma.tenantRentalOption.findUnique({
+      where: { id: optionId },
+    });
+    if (!option) {
+      throw new Error('Subscription option not found');
+    }
+
+    const fapshiApiKey = this.configService.get<string>('FAPSHI_APIKEY') || '';
+    const fapshiApiUser =
+      this.configService.get<string>('FAPSHI_APIUSER') || '';
+    const fapshiBaseUrl =
+      this.configService.get<string>('FAPSHI_BASE_URL') || '';
+
+    if (!fapshiApiKey || !fapshiApiUser || !fapshiBaseUrl) {
+      throw new Error('Missing platform Fapshi API configuration');
+    }
+
+    const paymentData: any = {
+      amount: amount + amount * 0.04,
+      phone,
+      userId: null,
+    };
+
+    if (email) paymentData.email = email;
+    if (externalId) paymentData.externalId = externalId;
+    if (name) paymentData.name = name;
+
+    const fapshiResponse = await axios.post(
+      `${fapshiBaseUrl}/direct-pay`,
+      paymentData,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          apiuser: fapshiApiUser,
+          apikey: fapshiApiKey,
+        },
+        timeout: 10000,
+      },
+    );
+
+    const grossAmount = amount + amount * 0.04;
+    const payment = await this.prisma.payment.create({
+      data: {
+        tenantId,
+        userId: null,
+        planId: null,
+        amount,
+        grossAmount,
+        email,
+        phone,
+        externalId,
+        userIp,
+        status: (fapshiResponse.data.status || 'created').toLowerCase(),
+        fapshiTransactionId: fapshiResponse.data.transId,
+        fapshiResponse: fapshiResponse.data,
+        paymentModel: 'ESCROW',
+        paymentPurpose: 'TENANT_RENTAL',
+        tenantSubscriptionId,
+      },
+    });
+
+    return {
+      paymentId: payment.id,
+      transId: fapshiResponse.data.transId,
+      amount,
+      message:
+        'Tenant subscription payment request sent. Please complete the payment on your device.',
+    };
   }
 
   async checkPaymentStatus(transactionId: string) {
@@ -232,9 +465,9 @@ export class PaymentsService {
         `  ✅ Status received from Fapshi: ${response.data.status}`,
       );
 
-      this.logger.log(`  2️⃣ Looking up payment record in MongoDB`);
-      const payment = await this.paymentModel.findOne({
-        fapshiTransactionId: transactionId,
+      this.logger.log(`  2️⃣ Looking up payment record in database`);
+      const payment = await this.prisma.payment.findFirst({
+        where: { fapshiTransactionId: transactionId },
       });
       if (!payment) {
         this.logger.warn(`  ⚠️ Payment not found in database`);
@@ -243,16 +476,22 @@ export class PaymentsService {
       this.logger.log(`  ✅ Payment found in database`);
 
       // Update payment status (normalize to enum: lowercase for initial states)
-      this.logger.log(`  3️⃣ Updating payment status in MongoDB`);
+      this.logger.log(`  3️⃣ Updating payment status in database`);
       const statusValue = response.data.status;
-      payment.status =
+      const normalizedStatus =
         statusValue &&
         ['created', 'pending'].includes(statusValue.toLowerCase())
           ? statusValue.toLowerCase()
           : statusValue;
-      payment.fapshiResponse = response.data;
-      await payment.save();
-      this.logger.log(`  ✅ Payment status updated: ${payment.status}`);
+
+      await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: normalizedStatus,
+          fapshiResponse: response.data,
+        },
+      });
+      this.logger.log(`  ✅ Payment status updated: ${normalizedStatus}`);
 
       // Activate user if payment succeeded
       if (response.data.status === 'SUCCESSFUL') {
@@ -277,7 +516,8 @@ export class PaymentsService {
       );
 
       // Convert Fapshi errors to user-friendly messages for status checks
-      let userFriendlyMessage = 'Unable to check payment status. Please try again.';
+      let userFriendlyMessage =
+        'Unable to check payment status. Please try again.';
 
       if (error.response) {
         const fapshiError = error.response.data;
@@ -286,18 +526,31 @@ export class PaymentsService {
         if (fapshiError.message) {
           const errorMsg = fapshiError.message.toLowerCase();
 
-          if (errorMsg.includes('not found') || errorMsg.includes('transaction')) {
-            userFriendlyMessage = 'Payment transaction not found. It may have expired.';
-          } else if (errorMsg.includes('timeout') || errorMsg.includes('network')) {
-            userFriendlyMessage = 'Payment status check timed out. Please check your connection.';
+          if (
+            errorMsg.includes('not found') ||
+            errorMsg.includes('transaction')
+          ) {
+            userFriendlyMessage =
+              'Payment transaction not found. It may have expired.';
+          } else if (
+            errorMsg.includes('timeout') ||
+            errorMsg.includes('network')
+          ) {
+            userFriendlyMessage =
+              'Payment status check timed out. Please check your connection.';
           } else {
-            userFriendlyMessage = fapshiError.message.length < 100 ? fapshiError.message : userFriendlyMessage;
+            userFriendlyMessage =
+              fapshiError.message.length < 100
+                ? fapshiError.message
+                : userFriendlyMessage;
           }
         }
       } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-        userFriendlyMessage = 'Payment service is currently unavailable. Please try again later.';
+        userFriendlyMessage =
+          'Payment service is currently unavailable. Please try again later.';
       } else if (error.code === 'ETIMEDOUT') {
-        userFriendlyMessage = 'Payment status check timed out. Please try again.';
+        userFriendlyMessage =
+          'Payment status check timed out. Please try again.';
       }
 
       const userError = new Error(userFriendlyMessage);
@@ -389,83 +642,362 @@ export class PaymentsService {
       );
 
       this.logger.log(`  2️⃣ Looking up payment in database`);
-      const payment = await this.paymentModel.findOne({
-        fapshiTransactionId: data.transId,
+      const payment = await this.prisma.payment.findFirst({
+        where: { fapshiTransactionId: data.transId },
+        include: { user: true, tenant: true, plan: true },
       });
       if (!payment) {
         this.logger.warn(`  ⚠️ Payment not found for transId: ${data.transId}`);
         return { success: false, message: 'Payment not found' };
       }
-      this.logger.log(`  ✅ Payment found: User ${payment.userId}`);
+      this.logger.log(
+        `  ✅ Payment found: User ${payment.userId} (Tenant: ${payment.tenantId})`,
+      );
+
+      // IMPORTANT: Ensure webhook handles multi-tenant context correctly
+      this.logger.log(
+        `  🏢 Tenant Context: ${payment.tenantId} | User: ${payment.user?.username || 'unknown'}`,
+      );
 
       // Update payment status (normalize to enum: lowercase for initial states)
       this.logger.log(`  3️⃣ Updating payment status`);
       const statusValue = statusResponse.data.status;
-      payment.status =
+      const normalizedStatus =
         statusValue &&
         ['created', 'pending'].includes(statusValue.toLowerCase())
           ? statusValue.toLowerCase()
           : statusValue;
-      payment.fapshiResponse = statusResponse.data;
-      await payment.save();
-      this.logger.log(`  ✅ Payment status updated: ${payment.status}`);
+
+      const updatedPayment = await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: normalizedStatus,
+          fapshiResponse: statusResponse.data,
+        },
+        include: { user: true, tenant: true, plan: true },
+      });
+      this.logger.log(`  ✅ Payment status updated: ${updatedPayment.status}`);
 
       // Handle different statuses
       this.logger.log(`  4️⃣ Processing payment result`);
       switch (statusResponse.data.status) {
         case 'SUCCESSFUL':
-          this.logger.log(`  ✅ Payment SUCCESSFUL - activating user access`);
+          this.logger.log(
+            `  ✅ Payment SUCCESSFUL - Processing for ${payment.tenantId} (Purpose: ${payment.paymentPurpose})`,
+          );
+
+          if (payment.paymentPurpose === 'TENANT_RENTAL') {
+            this.logger.log(
+              `  🏢 TENANT RENTAL PAYMENT: Activating subscription for tenant ${payment.tenantId}`,
+            );
+
+            const subscription = payment.tenantSubscriptionId
+              ? await this.prisma.tenantSubscription.findUnique({
+                  where: { id: payment.tenantSubscriptionId },
+                })
+              : await this.prisma.tenantSubscription.findFirst({
+                  where: {
+                    tenantId: payment.tenantId,
+                    status: 'PENDING',
+                  },
+                  orderBy: { createdAt: 'desc' },
+                });
+
+            if (subscription) {
+              await this.prisma.tenantSubscription.update({
+                where: { id: subscription.id },
+                data: {
+                  status: 'ACTIVE',
+                },
+              });
+              this.logger.log(
+                `    ✅ Tenant subscription activated: ${subscription.id}`,
+              );
+            } else {
+              this.logger.warn(
+                `    ⚠️ No pending tenant subscription found for payment ${payment.id}`,
+              );
+            }
+
+            return {
+              success: true,
+              status: statusResponse.data.status,
+              tenantId: payment.tenantId,
+              paymentPurpose: payment.paymentPurpose,
+              message: 'Tenant subscription payment completed successfully.',
+            };
+          }
+
+          // HYBRID BILLING: Handle ESCROW mode special processing for user plan payments
+          if (payment.paymentModel === 'ESCROW') {
+            this.logger.log(
+              `  💰 ESCROW MODE: Recording transaction and updating tenant balance`,
+            );
+
+            const platformFeePercent = 0.05; // 5% platform commission
+            const grossAmount = Number(payment.amount);
+            const platformFee = grossAmount * platformFeePercent;
+            const tenantNetAmount = grossAmount - platformFee;
+
+            this.logger.log(`    📊 Transaction breakdown:`);
+            this.logger.log(`       Gross amount: ${grossAmount} XAF`);
+            this.logger.log(`       Platform fee (5%): ${platformFee} XAF`);
+            this.logger.log(`       Tenant net: ${tenantNetAmount} XAF`);
+
+            try {
+              // Create billing transaction for transparency and auditing
+              await this.prisma.billingTransaction.create({
+                data: {
+                  tenantId: payment.tenantId,
+                  paymentId: payment.id,
+                  transactionType: 'PAYMENT',
+                  originalAmount: grossAmount,
+                  commissionRate: platformFeePercent,
+                  commissionAmount: platformFee,
+                  netAmount: tenantNetAmount,
+                  description: `Payment from user ${payment.userId} for plan ${payment.planId}`,
+                },
+              });
+              this.logger.log(`    ✅ Billing transaction created`);
+
+              const prismaAny = this.prisma as any;
+              try {
+                await prismaAny.balanceTransaction.create({
+                  data: {
+                    tenantId: payment.tenantId,
+                    paymentId: payment.id,
+                    amount: grossAmount,
+                    fee: platformFee,
+                    netAmount: tenantNetAmount,
+                    transactionType: 'PAYMENT',
+                    description: `ESCROW payment ledger entry for payment ${payment.id}`,
+                  },
+                });
+                this.logger.log(`    ✅ Balance transaction recorded`);
+              } catch (ledgerError: any) {
+                this.logger.warn(
+                  `⚠️ Failed to record balance transaction: ${ledgerError.message}`,
+                );
+              }
+
+              // Update tenant's escrow balance
+              const tenant = await this.prisma.tenant.findUnique({
+                where: { id: payment.tenantId },
+              });
+              const newBalance =
+                Number(tenant?.escrowBalance || 0) + tenantNetAmount;
+
+              await this.prisma.tenant.update({
+                where: { id: payment.tenantId },
+                data: {
+                  escrowBalance: newBalance,
+                  totalGrossRevenue:
+                    Number(tenant?.totalGrossRevenue || 0) + grossAmount,
+                  totalCommissionEarned:
+                    Number(tenant?.totalCommissionEarned || 0) + platformFee,
+                  escrowLastUpdated: new Date(),
+                },
+              });
+              this.logger.log(
+                `    💰 Tenant escrow balance updated: +${tenantNetAmount} XAF (new balance: ${newBalance} XAF)`,
+              );
+
+              // Mark payment as credited to escrow
+              await this.prisma.payment.update({
+                where: { id: payment.id },
+                data: {
+                  escrowCredited: true,
+                  grossAmount: grossAmount,
+                },
+              });
+            } catch (billingError: any) {
+              this.logger.error(
+                `    ❌ Billing transaction creation failed: ${billingError.message}`,
+              );
+              // Continue with user activation even if billing transaction fails
+            }
+          } else {
+            this.logger.log(
+              `  💳 DIRECT MODE: Money went directly to tenant's Fapshi account`,
+            );
+          }
+
+          // Proceed with user activation
+          this.logger.log(
+            `  ✅ Payment SUCCESSFUL - activating user access (Tenant: ${payment.tenantId})`,
+          );
           const activationResult = await this.activateUserAccess(payment);
+
+          // Log billing event for tenant tracking
+          // TODO: Add billingLog table to schema
+          /*
+          try {
+            await this.prisma.billingLog.create({
+              data: {
+                tenantId: payment.tenantId,
+                userId: payment.userId,
+                planId: payment.planId,
+                amount: payment.amount,
+                transactionId: data.transId,
+                status: 'SUCCESSFUL',
+                eventType: 'PAYMENT_COMPLETED',
+                timestamp: new Date(),
+              },
+            }).catch(() => {
+              // Table might not exist in current schema, continue anyway
+              this.logger.warn(`⚠️ BillingLog table not available, skipping billing event`);
+            });
+          } catch (error) {
+            this.logger.error(`❌ Error recording billing event: ${error.message}`);
+          }
+          */
+
           return {
             success: true,
             status: statusResponse.data.status,
             activation: activationResult,
+            tenantId: payment.tenantId,
+            paymentModel: payment.paymentModel,
             message:
               activationResult?.message ||
               'Payment completed and user activated',
           };
         case 'FAILED':
-          this.logger.warn(`  ❌ Payment FAILED: ${data.transId}`);
+          this.logger.warn(
+            `  ❌ Payment FAILED: ${data.transId} (Tenant: ${payment.tenantId})`,
+          );
 
           // Provide more specific failure reasons based on Fapshi response
           let failureMessage = 'Payment was declined';
           if (statusResponse.data.message) {
             const fapshiMsg = statusResponse.data.message.toLowerCase();
-            if (fapshiMsg.includes('insufficient') || fapshiMsg.includes('balance')) {
+            if (
+              fapshiMsg.includes('insufficient') ||
+              fapshiMsg.includes('balance')
+            ) {
               failureMessage = 'Payment failed: Insufficient account balance';
-            } else if (fapshiMsg.includes('cancelled') || fapshiMsg.includes('declined')) {
+            } else if (
+              fapshiMsg.includes('cancelled') ||
+              fapshiMsg.includes('declined')
+            ) {
               failureMessage = 'Payment was cancelled or declined';
-            } else if (fapshiMsg.includes('timeout') || fapshiMsg.includes('expired')) {
+            } else if (
+              fapshiMsg.includes('timeout') ||
+              fapshiMsg.includes('expired')
+            ) {
               failureMessage = 'Payment timed out or expired';
             } else if (fapshiMsg.includes('invalid')) {
               failureMessage = 'Payment failed: Invalid transaction details';
             } else {
               // Use Fapshi's message if it's concise and user-friendly
-              failureMessage = statusResponse.data.message.length < 100
-                ? `Payment failed: ${statusResponse.data.message}`
-                : failureMessage;
+              failureMessage =
+                statusResponse.data.message.length < 100
+                  ? `Payment failed: ${statusResponse.data.message}`
+                  : failureMessage;
             }
+          }
+
+          // Log failed billing event
+          // TODO: Add billingLog table to schema
+          /*
+          try {
+            await this.prisma.billingLog.create({
+              data: {
+                tenantId: payment.tenantId,
+                userId: payment.userId,
+                planId: payment.planId,
+                amount: payment.amount,
+                transactionId: data.transId,
+                status: 'FAILED',
+                eventType: 'PAYMENT_FAILED',
+                timestamp: new Date(),
+                metadata: { failureReason: failureMessage },
+              },
+            }).catch(() => {
+              this.logger.warn(`⚠️ BillingLog table not available`);
+            });
+          } catch (error) {
+            this.logger.error(`❌ Error recording failed billing event: ${error.message}`);
+          }
+          */
+
+          if (
+            payment.paymentPurpose === 'TENANT_RENTAL' &&
+            payment.tenantSubscriptionId
+          ) {
+            await this.prisma.tenantSubscription.updateMany({
+              where: {
+                id: payment.tenantSubscriptionId,
+                status: 'PENDING',
+              },
+              data: {
+                status: 'FAILED',
+              },
+            });
           }
 
           return {
             success: false,
             status: 'FAILED',
+            tenantId: payment.tenantId,
             message: failureMessage,
           };
         case 'EXPIRED':
-          this.logger.warn(`  ⏱️ Payment EXPIRED: ${data.transId}`);
+          if (
+            payment.paymentPurpose === 'TENANT_RENTAL' &&
+            payment.tenantSubscriptionId
+          ) {
+            await this.prisma.tenantSubscription.updateMany({
+              where: {
+                id: payment.tenantSubscriptionId,
+                status: 'PENDING',
+              },
+              data: {
+                status: 'FAILED',
+              },
+            });
+          }
+          this.logger.warn(
+            `  ⏱️ Payment EXPIRED: ${data.transId} (Tenant: ${payment.tenantId})`,
+          );
+
+          // Log expired billing event
+          // TODO: Add billingLog table to schema
+          /*
+          try {
+            await this.prisma.billingLog.create({
+              data: {
+                tenantId: payment.tenantId,
+                userId: payment.userId,
+                planId: payment.planId,
+                amount: payment.amount,
+                transactionId: data.transId,
+                status: 'EXPIRED',
+                eventType: 'PAYMENT_EXPIRED',
+                timestamp: new Date(),
+              },
+            }).catch(() => {
+              this.logger.warn(`⚠️ BillingLog table not available`);
+            });
+          } catch (error) {
+            this.logger.error(`❌ Error recording expired billing event: ${error.message}`);
+          }
+          */
+
           return {
             success: false,
             status: 'EXPIRED',
+            tenantId: payment.tenantId,
             message: 'Payment request has expired',
           };
         default:
           this.logger.warn(
-            `  ⚠️ Unknown payment status: ${statusResponse.data.status}`,
+            `  ⚠️ Unknown payment status: ${statusResponse.data.status} (Tenant: ${payment.tenantId})`,
           );
           return {
             success: false,
             status: statusResponse.data.status,
+            tenantId: payment.tenantId,
             message: 'Unknown payment status',
           };
       }
@@ -473,7 +1005,8 @@ export class PaymentsService {
       this.logger.error(`❌ Webhook notification error: ${error.message}`);
 
       // Convert webhook errors to user-friendly messages
-      let errorMessage = 'Payment processing failed. Please contact support if the issue persists.';
+      let errorMessage =
+        'Payment processing failed. Please contact support if the issue persists.';
 
       if (error.response) {
         const fapshiError = error.response.data;
@@ -482,30 +1015,43 @@ export class PaymentsService {
         if (fapshiError.message) {
           const errorMsg = fapshiError.message.toLowerCase();
 
-          if (errorMsg.includes('not found') || errorMsg.includes('transaction')) {
-            errorMessage = 'Payment transaction not found. Please try initiating a new payment.';
-          } else if (errorMsg.includes('timeout') || errorMsg.includes('network')) {
-            errorMessage = 'Payment service temporarily unavailable. Your payment may still be processing.';
+          if (
+            errorMsg.includes('not found') ||
+            errorMsg.includes('transaction')
+          ) {
+            errorMessage =
+              'Payment transaction not found. Please try initiating a new payment.';
+          } else if (
+            errorMsg.includes('timeout') ||
+            errorMsg.includes('network')
+          ) {
+            errorMessage =
+              'Payment service temporarily unavailable. Your payment may still be processing.';
           } else {
-            errorMessage = fapshiError.message.length < 100 ? fapshiError.message : errorMessage;
+            errorMessage =
+              fapshiError.message.length < 100
+                ? fapshiError.message
+                : errorMessage;
           }
         }
       } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-        errorMessage = 'Payment service is currently unavailable. Please try again later.';
+        errorMessage =
+          'Payment service is currently unavailable. Please try again later.';
       } else if (error.code === 'ETIMEDOUT') {
-        errorMessage = 'Payment processing timed out. Please check your payment status manually.';
+        errorMessage =
+          'Payment processing timed out. Please check your payment status manually.';
       }
 
       return {
         success: false,
         error: errorMessage,
-        technical: error.message // Keep technical details for logging
+        technical: error.message, // Keep technical details for logging
       };
     }
   }
 
-  private async activateUserAccess(payment: PaymentDocument) {
-    this.logger.log(`🚀 Activating user access for payment: ${payment._id}`);
+  private async activateUserAccess(payment: PrismaPayment) {
+    this.logger.log(`🚀 Activating user access for payment: ${payment.id}`);
     this.logger.log(
       `   📋 Payment details: planId=${payment.planId}, userId=${payment.userId}, status=${payment.status}`,
     );
@@ -517,8 +1063,12 @@ export class PaymentsService {
     );
 
     try {
+      if (!payment.planId) throw new Error('Payment has no plan ID');
       this.logger.log(`  1️⃣ Fetching plan details (ID: ${payment.planId})`);
-      const plan = await this.plansService.findById(payment.planId);
+      const plan = await this.plansService.findById(
+        payment.tenantId,
+        payment.planId,
+      );
       if (!plan) throw new Error('Plan not found');
       this.logger.log(
         `  ✅ Plan found: ${plan.name} (${plan.duration}h duration)`,
@@ -538,33 +1088,45 @@ export class PaymentsService {
 
         // Check if recipient exists
         this.logger.log(`  2️⃣ Checking if recipient exists: ${username}`);
-        let recipient = await this.usersService.findByUsername(username);
+        let recipient = await this.usersService.findByUsername(
+          payment.tenantId,
+          username,
+        );
 
         if (!recipient) {
           // Create new recipient user
-          this.logger.log(`  ➕ Recipient doesn't exist, creating new user: ${username}`);
+          this.logger.log(
+            `  ➕ Recipient doesn't exist, creating new user: ${username}`,
+          );
           recipient = await this.usersService.create(
+            payment.tenantId,
             username,
             payment.password || username, // Use provided password or default to username
             undefined, // macAddress - not known for gifts
             undefined, // ipAddress - not known for gifts
             undefined, // routerIdentity - not known for gifts
           );
-          this.logger.log(`  ✅ New recipient user created: ${(recipient as any)._id}`);
+          this.logger.log(`  ✅ New recipient user created: ${recipient.id}`);
           needsReactivation = false; // New user, not reactivation
         } else {
-          this.logger.log(`  ✅ Recipient found: ${recipient.username} (${recipient.isActive ? 'Active' : 'Inactive'})`);
+          this.logger.log(
+            `  ✅ Recipient found: ${recipient.username} (${recipient.isActive ? 'Active' : 'Inactive'})`,
+          );
           needsReactivation = !recipient.isActive;
           if (needsReactivation) {
             this.logger.log(`  🔄 Recipient needs reactivation`);
           }
         }
 
-        targetUserId = (recipient as any)._id; // Use recipient's ID for database updates
+        targetUserId = recipient.id; // Use recipient's ID for database updates
       } else {
         // Self-purchase flow: activate payer's username
+        if (!payment.userId) throw new Error('Payment has no user ID');
         this.logger.log(`  2️⃣ Fetching user details (ID: ${payment.userId})`);
-        const user = await this.usersService.findById(payment.userId);
+        const user = await this.usersService.findById(
+          payment.tenantId,
+          payment.userId,
+        );
         if (!user) throw new Error('User not found');
         this.logger.log(`  ✅ User found: ${user.username}`);
         username = user.username;
@@ -597,6 +1159,7 @@ export class PaymentsService {
       const userUpdateData: any = {
         isActive: true,
         sessionExpiry: expiry,
+        planId: payment.planId, // Assign the plan to the user
       };
 
       // For gifts, we don't have device info since recipient logs in manually
@@ -624,29 +1187,45 @@ export class PaymentsService {
         }
       }
 
-      await this.usersService.updateUser(targetUserId, userUpdateData);
+      await this.usersService.updateUser(
+        payment.tenantId,
+        targetUserId,
+        userUpdateData,
+      );
       this.logger.log(
         `  ✅ ${isGift ? 'Recipient' : 'User'} ${needsReactivation ? 'reactivated' : 'activated'} in MongoDB${isGift ? '' : ' with device info'}`,
       );
 
       // Activate on MikroTik - FIRST: Check if user exists, create if not, then activate
-      this.logger.log(
-        `  5️⃣ Checking MikroTik user account for: ${username}`,
-      );
+      this.logger.log(`  5️⃣ Checking MikroTik user account for: ${username}`);
 
       // Check if user exists on MikroTik
-      this.logger.log(`  🔍 Checking if user ${username} exists on MikroTik...`);
-      const userExistsOnMikrotik = await this.mikrotikService.userExists(username);
+      this.logger.log(
+        `  🔍 Checking if user ${username} exists on MikroTik...`,
+      );
+      const userExistsOnMikrotik =
+        await this.mikrotikService.userExists(username);
 
       if (!userExistsOnMikrotik) {
-        this.logger.log(`  ➕ User ${username} does not exist on MikroTik - creating user account first...`);
+        this.logger.log(
+          `  ➕ User ${username} does not exist on MikroTik - creating user account first...`,
+        );
         try {
           // Create the user account on MikroTik first
-          await this.mikrotikService.createUser(username, payment.password || username);
-          this.logger.log(`  ✅ User ${username} created successfully on MikroTik`);
+          await this.mikrotikService.createUser(
+            username,
+            payment.password || username,
+          );
+          this.logger.log(
+            `  ✅ User ${username} created successfully on MikroTik`,
+          );
         } catch (createError: any) {
-          this.logger.error(`  ❌ Failed to create user ${username} on MikroTik: ${createError.message}`);
-          throw new Error(`Failed to create user account on MikroTik: ${createError.message}`);
+          this.logger.error(
+            `  ❌ Failed to create user ${username} on MikroTik: ${createError.message}`,
+          );
+          throw new Error(
+            `Failed to create user account on MikroTik: ${createError.message}`,
+          );
         }
       } else {
         this.logger.log(`  ✅ User ${username} already exists on MikroTik`);
@@ -699,24 +1278,39 @@ export class PaymentsService {
         );
 
         // Convert MikroTik errors to user-friendly messages
-        let userFriendlyMessage = 'Internet access setup failed. Please contact support.';
+        let userFriendlyMessage =
+          'Internet access setup failed. Please contact support.';
 
         if (activateError.message) {
           const errorMsg = activateError.message.toLowerCase();
 
           if (errorMsg.includes('connection') || errorMsg.includes('connect')) {
-            userFriendlyMessage = 'Unable to connect to internet router. Please try again in a few minutes.';
-          } else if (errorMsg.includes('timeout') || errorMsg.includes('network')) {
-            userFriendlyMessage = 'Router connection timed out. Your payment was successful - please try logging in manually.';
-          } else if (errorMsg.includes('unreachable') || errorMsg.includes('refused')) {
-            userFriendlyMessage = 'Internet service temporarily unavailable. Your payment was successful - access will be available shortly.';
-          } else if (errorMsg.includes('all routers failed') || errorMsg.includes('available router')) {
-            userFriendlyMessage = 'All internet routers are currently offline. Your payment was successful - please try again later.';
+            userFriendlyMessage =
+              'Unable to connect to internet router. Please try again in a few minutes.';
+          } else if (
+            errorMsg.includes('timeout') ||
+            errorMsg.includes('network')
+          ) {
+            userFriendlyMessage =
+              'Router connection timed out. Your payment was successful - please try logging in manually.';
+          } else if (
+            errorMsg.includes('unreachable') ||
+            errorMsg.includes('refused')
+          ) {
+            userFriendlyMessage =
+              'Internet service temporarily unavailable. Your payment was successful - access will be available shortly.';
+          } else if (
+            errorMsg.includes('all routers failed') ||
+            errorMsg.includes('available router')
+          ) {
+            userFriendlyMessage =
+              'All internet routers are currently offline. Your payment was successful - please try again later.';
           } else {
             // Use the original message if it's concise and technical details are stripped
-            userFriendlyMessage = activateError.message.length < 150
-              ? `Internet setup failed: ${activateError.message}`
-              : userFriendlyMessage;
+            userFriendlyMessage =
+              activateError.message.length < 150
+                ? `Internet setup failed: ${activateError.message}`
+                : userFriendlyMessage;
           }
         }
 
@@ -728,14 +1322,21 @@ export class PaymentsService {
 
       // Save activeRouter field for audit trail
       if ((payment as any).activeRouter) {
-        payment.activeRouter = (payment as any).activeRouter;
-        await payment.save();
+        await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            activeRouter: (payment as any).activeRouter,
+          },
+        });
       }
 
       // Log activity for successful payment
-      const plan_ref = await this.plansService.findById(payment.planId);
+      const plan_ref = payment.planId
+        ? await this.plansService.findById(payment.tenantId, payment.planId)
+        : null;
       await this.activitiesService.logActivity(
-        payment.userId,
+        payment.tenantId,
+        payment.userId || 'unknown',
         'payment_processed',
         'payment',
         `${isGift ? `Gift: ` : ''}${needsReactivation ? 'Reactivation: ' : ''}Payment of ${payment.amount} CFA processed successfully for ${plan_ref?.name || 'Plan'} (${plan_ref?.duration}h)`,
@@ -752,7 +1353,7 @@ export class PaymentsService {
         },
         undefined,
         {
-          routerIdentity: payment.activeRouter,
+          routerIdentity: payment.activeRouter || undefined,
           sessionId: undefined,
         },
       );
@@ -782,9 +1383,12 @@ export class PaymentsService {
       this.logger.error(`❌ Error activating user access: ${error.message}`);
 
       // Log failed payment
-      const plan_ref = await this.plansService.findById(payment.planId);
+      const plan_ref = payment.planId
+        ? await this.plansService.findById(payment.tenantId, payment.planId)
+        : null;
       await this.activitiesService.logActivity(
-        payment.userId,
+        payment.tenantId,
+        payment.userId || 'unknown',
         'payment_failed',
         'payment',
         `Payment of ${payment.amount} CFA activation failed for ${plan_ref?.name || 'Plan'}: ${error.message}`,
@@ -807,7 +1411,10 @@ export class PaymentsService {
     }
   }
 
-  async reconnectUserIfNeeded(userId: string): Promise<{
+  async reconnectUserIfNeeded(
+    tenantId: string,
+    userId: string,
+  ): Promise<{
     reconnected: boolean;
     username?: string;
     remainingTime?: number;
@@ -817,7 +1424,7 @@ export class PaymentsService {
     this.logger.log(`🔄 Checking if user needs WiFi reconnection: ${userId}`);
     try {
       this.logger.log(`  1️⃣ Fetching user details (ID: ${userId})`);
-      const user = await this.usersService.findById(userId);
+      const user = await this.usersService.findById(tenantId, userId);
       if (!user) {
         this.logger.warn(`  ⚠️ User not found: ${userId}`);
         return { reconnected: false, reason: 'User not found' };
@@ -825,8 +1432,11 @@ export class PaymentsService {
       this.logger.log(`  ✅ User found: ${user.username}`);
 
       // Check if user has an active session
-      const isSessionActive =
-        user.isActive && user.sessionExpiry && new Date() < user.sessionExpiry;
+      const isSessionActive = !!(
+        user.isActive &&
+        user.sessionExpiry &&
+        new Date() < user.sessionExpiry
+      );
 
       if (!isSessionActive) {
         this.logger.log(`  ℹ️ User has no active session`);
@@ -837,7 +1447,7 @@ export class PaymentsService {
         `  2️⃣ User has active session - calculating remaining time`,
       );
       const now = new Date();
-      const remainingMs = user.sessionExpiry.getTime() - now.getTime();
+      const remainingMs = user.sessionExpiry!.getTime() - now.getTime();
       const remainingHours = Math.ceil(remainingMs / (1000 * 60 * 60));
       this.logger.log(`  ✅ Remaining session time: ${remainingHours} hours`);
 
@@ -937,10 +1547,10 @@ export class PaymentsService {
   async getUserPayments(userId: string) {
     this.logger.log(`📋 Fetching payment history for user: ${userId}`);
     try {
-      const payments = await this.paymentModel
-        .find({ userId })
-        .sort({ createdAt: -1 })
-        .exec();
+      const payments = await this.prisma.payment.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      });
       this.logger.log(
         `✅ Retrieved ${payments.length} payments for user: ${userId}`,
       );

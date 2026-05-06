@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { User, UserDocument } from '../schemas/user.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
 
 @Injectable()
@@ -10,7 +8,7 @@ export class SessionCleanupService {
   private readonly logger = new Logger(SessionCleanupService.name);
 
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private prisma: PrismaService,
     private mikrotikService: MikrotikService,
   ) {}
 
@@ -39,12 +37,12 @@ export class SessionCleanupService {
 
       // Find users who are active but their session has expired
       this.logger.log(`  1️⃣ Querying database for expired sessions`);
-      const expiredUsers = await this.userModel
-        .find({
+      const expiredUsers = await this.prisma.user.findMany({
+        where: {
           isActive: true,
-          sessionExpiry: { $lt: now },
-        })
-        .exec();
+          sessionExpiry: { lt: now },
+        },
+      });
 
       result.expiredCount = expiredUsers.length;
 
@@ -90,29 +88,32 @@ export class SessionCleanupService {
     } catch (error: any) {
       result.elapsedMs = Date.now() - startTime;
       this.logger.error(`❌ Error during session cleanup: ${error.message}`);
-      result.failedUsers.push({ username: 'cleanup-run', reason: error.message });
+      result.failedUsers.push({
+        username: 'cleanup-run',
+        reason: error.message,
+      });
       return result;
     }
   }
 
   async getExpiredSessions() {
     const now = new Date();
-    this.logger.log(`🔎 Checking current expired sessions at ${now.toISOString()}`);
+    this.logger.log(
+      `🔎 Checking current expired sessions at ${now.toISOString()}`,
+    );
 
-    const expiredUsers = await this.userModel
-      .find(
-        {
-          isActive: true,
-          sessionExpiry: { $lt: now },
-        },
-        {
-          username: 1,
-          sessionExpiry: 1,
-          macAddress: 1,
-          routerIdentity: 1,
-        },
-      )
-      .lean();
+    const expiredUsers = await this.prisma.user.findMany({
+      where: {
+        isActive: true,
+        sessionExpiry: { lt: now },
+      },
+      select: {
+        username: true,
+        sessionExpiry: true,
+        macAddress: true,
+        routerIdentity: true,
+      },
+    });
 
     const result = expiredUsers.map((user) => ({
       username: user.username,
@@ -122,9 +123,9 @@ export class SessionCleanupService {
     }));
 
     this.logger.log(
-      `✅ Found ${result.length} expired session(s): ${result
-        .map((u) => u.username)
-        .join(', ') || 'none'}`,
+      `✅ Found ${result.length} expired session(s): ${
+        result.map((u) => u.username).join(', ') || 'none'
+      }`,
     );
     return {
       checkedAt: now.toISOString(),
@@ -136,7 +137,7 @@ export class SessionCleanupService {
   /**
    * Deactivate a single expired user
    */
-  private async deactivateExpiredUser(user: UserDocument) {
+  private async deactivateExpiredUser(user: any) {
     try {
       this.logger.log(
         `  ⏱️ Disabling expired session for: ${user.username} (expired: ${user.sessionExpiry})`,
@@ -168,7 +169,9 @@ export class SessionCleanupService {
           `    2️⃣ Deactivating user on available MikroTik routers (failover)`,
         );
         await this.mikrotikService.deactivateUser(user.username);
-        this.logger.log(`    ✅ User deactivated on MikroTik: ${user.username}`);
+        this.logger.log(
+          `    ✅ User deactivated on MikroTik: ${user.username}`,
+        );
       } catch (mikrotikError: any) {
         this.logger.warn(
           `    ⚠️ Failed to deactivate ${user.username} on MikroTik: ${mikrotikError.message} (will continue...)`,
@@ -177,11 +180,14 @@ export class SessionCleanupService {
       }
 
       // 3. Update user status in database
-      this.logger.log(`    3️⃣ Updating user status in MongoDB`);
-      await this.userModel.findByIdAndUpdate(user._id, {
-        isActive: false,
-        sessionExpiry: null,
-        macAddress: null,
+      this.logger.log(`    3️⃣ Updating user status in database`);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          isActive: false,
+          sessionExpiry: null,
+          macAddress: null,
+        },
       });
 
       this.logger.log(`  ✅ User deactivated: ${user.username}`);
@@ -234,20 +240,24 @@ export class SessionCleanupService {
       const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
 
       // Find users who are not active, created more than 20 minutes ago, and exist on MikroTik
-      this.logger.log(`  1️⃣ Querying database for unactivated users older than 20 minutes`);
-      const unactivatedUsers = await this.userModel
-        .find({
+      this.logger.log(
+        `  1️⃣ Querying database for unactivated users older than 20 minutes`,
+      );
+      const unactivatedUsers = await this.prisma.user.findMany({
+        where: {
           isActive: false,
-          createdAt: { $lt: twentyMinutesAgo },
+          createdAt: { lt: twentyMinutesAgo },
           mikrotikCreated: true,
-        })
-        .exec();
+        },
+      });
 
       result.unactivatedCount = unactivatedUsers.length;
 
       if (unactivatedUsers.length === 0) {
         result.elapsedMs = Date.now() - startTime;
-        this.logger.log(`✅ No unactivated users to clean up (${result.elapsedMs}ms)`);
+        this.logger.log(
+          `✅ No unactivated users to clean up (${result.elapsedMs}ms)`,
+        );
         return result;
       }
 
@@ -286,8 +296,13 @@ export class SessionCleanupService {
       return result;
     } catch (error: any) {
       result.elapsedMs = Date.now() - startTime;
-      this.logger.error(`❌ Error during unactivated user cleanup: ${error.message}`);
-      result.failedUsers.push({ username: 'cleanup-run', reason: error.message });
+      this.logger.error(
+        `❌ Error during unactivated user cleanup: ${error.message}`,
+      );
+      result.failedUsers.push({
+        username: 'cleanup-run',
+        reason: error.message,
+      });
       return result;
     }
   }
@@ -295,7 +310,7 @@ export class SessionCleanupService {
   /**
    * Deactivate a single unactivated user from MikroTik
    */
-  private async deleteUnactivatedUser(user: UserDocument) {
+  private async deleteUnactivatedUser(user: any) {
     try {
       this.logger.log(
         `  🗑️ Deactivating unactivated user: ${user.username} (created: ${user.createdAt})`,
@@ -303,9 +318,13 @@ export class SessionCleanupService {
 
       // 1. Deactivate user on MikroTik
       try {
-        this.logger.log(`    1️⃣ Deactivating user on MikroTik: ${user.username}`);
+        this.logger.log(
+          `    1️⃣ Deactivating user on MikroTik: ${user.username}`,
+        );
         await this.mikrotikService.deactivateUser(user.username);
-        this.logger.log(`    ✅ User deactivated on MikroTik: ${user.username}`);
+        this.logger.log(
+          `    ✅ User deactivated on MikroTik: ${user.username}`,
+        );
       } catch (mikrotikError: any) {
         this.logger.warn(
           `    ⚠️ Failed to deactivate ${user.username} on MikroTik: ${mikrotikError.message} (will continue...)`,
@@ -314,9 +333,12 @@ export class SessionCleanupService {
       }
 
       // 2. Update user status in database (mark as not created on MikroTik)
-      this.logger.log(`    2️⃣ Updating user status in MongoDB`);
-      await this.userModel.findByIdAndUpdate(user._id, {
-        mikrotikCreated: false,
+      this.logger.log(`    2️⃣ Updating user status in database`);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          mikrotikCreated: false,
+        },
       });
 
       this.logger.log(`  ✅ Unactivated user deactivated: ${user.username}`);

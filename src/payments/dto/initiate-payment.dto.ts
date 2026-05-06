@@ -1,5 +1,26 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEmail, Matches } from 'class-validator';
+import { IsString, IsOptional, IsEmail, ValidateBy, ValidationOptions } from 'class-validator';
+import { parsePhoneNumber } from 'libphonenumber-js';
+
+function IsValidCameroonPhone(validationOptions?: ValidationOptions) {
+  return ValidateBy(
+    {
+      name: 'isValidCameroonPhone',
+      validator: {
+        validate: (value: string) => {
+          try {
+            const phoneNumber = parsePhoneNumber(value, 'CM');
+            return phoneNumber.isValid() && phoneNumber.country === 'CM';
+          } catch {
+            return false;
+          }
+        },
+        defaultMessage: () => 'Phone number must be a valid Cameroon number (+237... or 6...)',
+      },
+    },
+    validationOptions,
+  );
+}
 
 export class InitiatePaymentDto {
   @ApiProperty({ example: '507f1f77bcf86cd799439011', description: 'Plan ID' })
@@ -11,9 +32,7 @@ export class InitiatePaymentDto {
     description: 'User phone number (required for direct payment)',
   })
   @IsString()
-  @Matches(/^6[\d]{8}$/, {
-    message: 'Phone number must be a valid Cameroon mobile number starting with 6 (e.g., 691234567)',
-  })
+  @IsValidCameroonPhone()
   phone: string;
 
   @ApiProperty({

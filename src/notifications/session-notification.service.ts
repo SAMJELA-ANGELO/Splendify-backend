@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { Cron } from '@nestjs/schedule';
-import { User, UserDocument } from '../schemas/user.schema';
+import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from './notifications.service';
 
 @Injectable()
@@ -14,7 +12,7 @@ export class SessionNotificationService {
   private readonly TEN_MIN_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private prisma: PrismaService,
     private notificationsService: NotificationsService,
   ) {}
 
@@ -35,12 +33,12 @@ export class SessionNotificationService {
       const usersCounted = { notified30min: 0, notified10min: 0, notified: 0 };
 
       // Find all active users with pending sessions
-      const activeUsers = await this.userModel
-        .find({
+      const activeUsers = await this.prisma.user.findMany({
+        where: {
           isActive: true,
-          sessionExpiry: { $ne: null },
-        })
-        .exec();
+          sessionExpiry: { not: null },
+        },
+      });
 
       if (activeUsers.length === 0) {
         const elapsed = Date.now() - startTime;
@@ -54,6 +52,7 @@ export class SessionNotificationService {
 
       // Check each active user's session
       for (const user of activeUsers) {
+        if (!user.sessionExpiry) continue;
         const sessionExpiry = user.sessionExpiry.getTime();
         const timeRemaining = sessionExpiry - now.getTime();
 
@@ -68,8 +67,9 @@ export class SessionNotificationService {
             user,
             timeRemaining,
           );
-          await this.userModel.findByIdAndUpdate(user._id, {
-            notification30minSent: now,
+          await this.prisma.user.update({
+            where: { id: user.id },
+            data: { notification30minSent: now },
           });
           usersCounted.notified30min++;
         }
@@ -85,8 +85,9 @@ export class SessionNotificationService {
             user,
             timeRemaining,
           );
-          await this.userModel.findByIdAndUpdate(user._id, {
-            notification10minSent: now,
+          await this.prisma.user.update({
+            where: { id: user.id },
+            data: { notification10minSent: now },
           });
           usersCounted.notified10min++;
         }
@@ -95,8 +96,9 @@ export class SessionNotificationService {
         if (timeRemaining <= 0 && !user.notificationExpiredSent) {
           this.logger.log(`  ⛔ Expired notification for: ${user.username}`);
           await this.notificationsService.sendSessionExpiredNotification(user);
-          await this.userModel.findByIdAndUpdate(user._id, {
-            notificationExpiredSent: now,
+          await this.prisma.user.update({
+            where: { id: user.id },
+            data: { notificationExpiredSent: now },
           });
           usersCounted.notified++;
         }
@@ -122,10 +124,13 @@ export class SessionNotificationService {
   async resetNotificationFlags(userId: string) {
     try {
       this.logger.log(`🔄 Resetting notification flags for user: ${userId}`);
-      await this.userModel.findByIdAndUpdate(userId, {
-        notification30minSent: null,
-        notification10minSent: null,
-        notificationExpiredSent: null,
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          notification30minSent: null,
+          notification10minSent: null,
+          notificationExpiredSent: null,
+        },
       });
       this.logger.log(`✅ Notification flags reset for user: ${userId}`);
     } catch (error: any) {

@@ -6,6 +6,9 @@ export type PlanDocument = Plan & Document;
 @Schema()
 export class Plan {
   @Prop({ required: true })
+  tenantId: string; // Multi-tenant support
+
+  @Prop({ required: true })
   name: string;
 
   @Prop({ required: true })

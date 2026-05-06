@@ -23,7 +23,7 @@ All endpoints are fully documented and ready to test in Swagger:
 ### 1. Initiate Payment (Bundle Purchase)
 - **Path**: `POST /payments/initiate`
 - **Auth**: Not required (public)
-- **Description**: Start a bundle purchase via Fapshi mobile money
+- **Description**: Start a bundle purchase via Mobile Money
 - **Request Body**:
 ```json
 {

@@ -6,6 +6,9 @@ export type PaymentDocument = Payment & Document;
 @Schema()
 export class Payment {
   @Prop({ required: true })
+  tenantId: string; // Multi-tenant support
+
+  @Prop({ required: true })
   userId: string;
 
   @Prop({ required: true })
