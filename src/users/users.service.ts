@@ -210,6 +210,34 @@ export class UsersService {
     return user;
   }
 
+  async findAll(tenantId: string) {
+    this.logger.log(`📋 Fetching all users for tenant: ${tenantId}`);
+    return this.prisma.user.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        role: true,
+        isActive: true,
+        plan: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        sessions: {
+          orderBy: { startTime: 'desc' },
+          take: 1,
+          select: { startTime: true, endTime: true, isActive: true },
+        },
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async updateUser(
     tenantId: string,
     id: string,

@@ -216,4 +216,92 @@ export class TenantsService {
       })),
     };
   }
+
+  async getTenantSettings(tenantId?: string): Promise<any> {
+    // If tenantId is provided, fetch specific tenant; otherwise return general settings
+    if (tenantId) {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          id: true,
+          name: true,
+          businessName: true,
+          logoUrl: true,
+          isActive: true,
+        },
+      });
+
+      if (!tenant) {
+        throw new BadRequestException(`Tenant ${tenantId} not found`);
+      }
+
+      return tenant;
+    }
+
+    // Return default settings structure
+    return {
+      businessName: '',
+      displayName: '',
+      phone: '',
+      address: '',
+      logoUrl: '',
+      primaryColor: '#3B82F6',
+      secondaryColor: '#1E40AF',
+    };
+  }
+
+  async updateTenantSettings(
+    settingsData: any,
+    tenantId?: string,
+  ): Promise<any> {
+    const updatePayload: any = {};
+
+    // Only update fields that are provided
+    if (settingsData.businessName) {
+      updatePayload.name = settingsData.businessName;
+    }
+    if (settingsData.displayName) {
+      updatePayload.displayName = settingsData.displayName;
+    }
+    if (settingsData.logoUrl) {
+      updatePayload.logoUrl = settingsData.logoUrl;
+    }
+
+    // If no tenant context is provided, return the settings as they would be stored
+    if (!updatePayload || Object.keys(updatePayload).length === 0) {
+      return {
+        success: true,
+        message: 'Settings validated',
+        settings: settingsData,
+      };
+    }
+
+    // If we have a tenant ID, update it
+    if (tenantId) {
+      const updated = await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: updatePayload,
+        select: {
+          id: true,
+          name: true,
+          businessName: true,
+          logoUrl: true,
+          isActive: true,
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Settings updated successfully',
+        settings: updated,
+      };
+    }
+
+    // Return success response for browser-based storage
+    return {
+      success: true,
+      message: 'Settings updated successfully',
+      settings: settingsData,
+    };
+  }
 }

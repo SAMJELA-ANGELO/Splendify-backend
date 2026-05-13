@@ -158,4 +158,133 @@ export class BillingService {
       throw error;
     }
   }
+
+  async getTenantBillingHistory(tenantId: string): Promise<BillingHistoryResponseDto> {
+    this.logger.log(`📋 Fetching tenant billing history for tenant: ${tenantId}`);
+
+    try {
+      const payments = await this.prisma.payment.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        include: { user: true, plan: true },
+      });
+
+      if (!payments || payments.length === 0) {
+        return {
+          totalInvoices: 0,
+          totalAmountSpent: 0,
+          invoices: [],
+        };
+      }
+
+      const invoices: InvoiceDto[] = payments.map((payment) => ({
+        id: payment.id,
+        planName: payment.plan?.name || 'Unknown Plan',
+        amount: Number(payment.amount),
+        duration: payment.plan?.duration || 0,
+        purchaseDate: payment.createdAt,
+        status: payment.status,
+        transactionId: payment.fapshiTransactionId,
+        email: payment.user?.email || payment.email || undefined,
+        phone: payment.phone || undefined,
+        isGift: payment.isGift || false,
+        recipientUsername: payment.recipientUsername || undefined,
+        activeRouter: payment.activeRouter ?? undefined,
+      }));
+
+      const totalAmountSpent = invoices.reduce(
+        (sum, invoice) => sum + invoice.amount,
+        0,
+      );
+      const sortedByDate = [...invoices].sort(
+        (a, b) =>
+          new Date(a.purchaseDate).getTime() -
+          new Date(b.purchaseDate).getTime(),
+      );
+
+      return {
+        totalInvoices: invoices.length,
+        totalAmountSpent,
+        invoices,
+        startDate:
+          sortedByDate.length > 0 ? sortedByDate[0].purchaseDate : undefined,
+        endDate:
+          sortedByDate.length > 0
+            ? sortedByDate[sortedByDate.length - 1].purchaseDate
+            : undefined,
+      };
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to fetch tenant billing history: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  async getTenantBillingStats(tenantId: string): Promise<BillingStatsDto> {
+    this.logger.log(`📊 Fetching tenant billing stats for tenant: ${tenantId}`);
+
+    try {
+      const payments = await this.prisma.payment.findMany({
+        where: { tenantId },
+      });
+
+      if (!payments || payments.length === 0) {
+        return {
+          totalPurchases: 0,
+          totalSpent: 0,
+          totalHoursPurchased: 0,
+          successfulPayments: 0,
+          failedPayments: 0,
+          giftsReceived: 0,
+          startDate: null,
+          endDate: null,
+        };
+      }
+
+      const plans = await this.prisma.plan.findMany({ where: { tenantId } });
+      const plansMap = new Map<string, (typeof plans)[number]>();
+      plans.forEach((plan) => {
+        plansMap.set(plan.id, plan);
+      });
+
+      const successfulPayments = payments.filter(
+        (p) => p.status === 'SUCCESSFUL',
+      );
+      const failedPayments = payments.filter((p) => p.status === 'FAILED');
+
+      let totalHoursPurchased = 0;
+      successfulPayments.forEach((payment) => {
+        const plan = plansMap.get(payment.planId || '');
+        if (plan) {
+          totalHoursPurchased += plan.duration * (successfulPayments.filter(p => p.planId === payment.planId).length);
+        }
+      });
+
+      const totalSpent = successfulPayments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      );
+      const sortedByDate = [...payments].sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+
+      return {
+        totalPurchases: payments.length,
+        totalSpent,
+        totalHoursPurchased,
+        successfulPayments: successfulPayments.length,
+        failedPayments: failedPayments.length,
+        giftsReceived: 0,
+        startDate: sortedByDate[0]?.createdAt,
+        endDate: sortedByDate[sortedByDate.length - 1]?.createdAt,
+      };
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to fetch tenant billing stats: ${error.message}`,
+      );
+      throw error;
+    }
+  }
 }

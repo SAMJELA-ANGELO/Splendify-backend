@@ -24,6 +24,34 @@ export class UsersController {
 
   constructor(private readonly usersService: UsersService) {}
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Get all users for the current tenant' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of tenant users',
+    schema: {
+      example: [
+        {
+          id: '507f1f77bcf86cd799439011',
+          username: 'john_doe',
+          email: 'john@example.com',
+          role: 'CUSTOMER',
+          isActive: true,
+          plan: { id: '507f1f77bcf86cd799439012', name: 'Premium' },
+          sessions: [{ updatedAt: '2026-05-13T12:00:00.000Z' }],
+          createdAt: '2026-05-01T08:00:00.000Z',
+          updatedAt: '2026-05-13T12:00:00.000Z',
+        },
+      ],
+    },
+  })
+  @Get()
+  async getUsers(@Request() req: any) {
+    this.logger.log(`📋 Fetching users for tenant ${req.tenantId}`);
+    return this.usersService.findAll(req.tenantId);
+  }
+
   @ApiOperation({ summary: 'Create a new user account' })
   @ApiResponse({
     status: 201,

@@ -96,4 +96,66 @@ export class BillingController {
       throw error;
     }
   }
+
+  @ApiOperation({
+    summary: 'Get tenant billing history',
+    description:
+      'Retrieves the complete billing history for the tenant, including all payments from all users',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Billing history retrieved successfully',
+    type: BillingHistoryResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Get('tenant/history')
+  async getTenantBillingHistory(
+    @Request() req: any,
+  ): Promise<BillingHistoryResponseDto> {
+    this.logger.log(
+      `📋 Tenant billing history requested for tenant: ${req.tenantId}`,
+    );
+    try {
+      const billingHistory = await this.billingService.getTenantBillingHistory(
+        req.tenantId,
+      );
+      this.logger.log(
+        `✅ Tenant billing history retrieved: ${billingHistory.totalInvoices} transactions`,
+      );
+      return billingHistory;
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to retrieve tenant billing history: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  @ApiOperation({
+    summary: 'Get tenant billing statistics',
+    description:
+      'Retrieves aggregated billing statistics for the tenant',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Billing statistics retrieved successfully',
+    type: BillingStatsDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Get('tenant/stats')
+  async getTenantBillingStats(@Request() req: any): Promise<BillingStatsDto> {
+    this.logger.log(`📊 Tenant billing stats requested for tenant: ${req.tenantId}`);
+    try {
+      const stats = await this.billingService.getTenantBillingStats(req.tenantId);
+      this.logger.log(
+        `✅ Tenant billing stats retrieved: ${stats.successfulPayments} successful payments`,
+      );
+      return stats;
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to retrieve tenant billing stats: ${error.message}`,
+      );
+      throw error;
+    }
+  }
 }

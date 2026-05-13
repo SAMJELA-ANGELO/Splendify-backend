@@ -24,6 +24,7 @@ import { TenantInterceptor } from './tenants/tenant.interceptor';
 import { AdminSeederService } from './auth/admin-seeder.service';
 import { RadiusModule } from './radius/radius.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     RouterModule,
     DashboardModule,
     RadiusModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -557,4 +557,68 @@ export class TenantsController {
       throw error;
     }
   }
+
+  // ============== TENANT SETTINGS ENDPOINTS ==============
+
+  @ApiOperation({
+    summary: 'Get tenant settings',
+    description: 'Retrieve tenant business settings, branding, and configurations.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Settings retrieved successfully',
+  })
+  @Get('settings')
+  async getTenantSettings() {
+    this.logger.log(`⚙️ Fetching tenant settings`);
+    try {
+      const settings = await this.tenantsService.getTenantSettings();
+      this.logger.log(`✅ Tenant settings retrieved`);
+      return settings;
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Failed to fetch tenant settings: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  @ApiOperation({
+    summary: 'Update tenant settings',
+    description: 'Update business name, contact info, branding, and general settings.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        businessName: { type: 'string', example: 'My ISP Business' },
+        displayName: { type: 'string', example: 'MyISP' },
+        phone: { type: 'string', example: '+237 6XX XXX XXX' },
+        address: { type: 'string', example: 'Yaounde, Cameroon' },
+        logoUrl: { type: 'string', example: 'https://...' },
+        primaryColor: { type: 'string', example: '#3B82F6' },
+        secondaryColor: { type: 'string', example: '#1E40AF' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Settings updated successfully',
+  })
+  @Put('settings')
+  async updateTenantSettings(@Body() settingsData: any) {
+    this.logger.log(`✏️ Updating tenant settings`);
+    try {
+      const settings = await this.tenantsService.updateTenantSettings(
+        settingsData,
+      );
+      this.logger.log(`✅ Tenant settings updated successfully`);
+      return settings;
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Failed to update tenant settings: ${error.message}`,
+      );
+      throw error;
+    }
+  }
 }

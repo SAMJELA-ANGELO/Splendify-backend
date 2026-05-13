@@ -80,6 +80,7 @@ model Tenant {
   billingTransactions BillingTransaction[]
   balanceTransactions BalanceTransaction[]
   subscriptions      TenantSubscription[]
+  notifications      Notification[]
 
   @@index([paymentModel])
   @@index([escrowBalance])
@@ -116,6 +117,7 @@ model User {
   payments   Payment[]
   sessions   Session[]
   activities Activity[]
+  notifications Notification[]
 
   @@unique([tenantId, username])
   @@unique([tenantId, email])
@@ -409,6 +411,35 @@ model Activity {
 
   @@index([tenantId])
   @@index([userId])
+  @@index([createdAt])
+}
+
+// ============================================
+// NOTIFICATION MANAGEMENT
+// ============================================
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String?  // Optional - null for system-wide notifications
+  type      String   // "payment", "system", "warning", "user", "connection"
+  title     String
+  message   String
+  priority  String   @default("normal") // "low", "normal", "high"
+  read      Boolean  @default(false)
+  readAt    DateTime?
+  data      Json?    // Additional data for the notification
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+  @@index([read])
   @@index([createdAt])
 }
 
