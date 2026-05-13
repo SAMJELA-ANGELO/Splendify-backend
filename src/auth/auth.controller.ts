@@ -28,7 +28,7 @@ export class AuthController {
     private mikrotikService: MikrotikService,
   ) {}
 
-  @ApiOperation({ summary: 'User login with username and password' })
+  @ApiOperation({ summary: 'User login with username/email and password' })
   @ApiBody({ type: LoginDto })
   @ApiResponse({
     status: 200,

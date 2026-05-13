@@ -23,6 +23,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { TenantInterceptor } from './tenants/tenant.interceptor';
 import { AdminSeederService } from './auth/admin-seeder.service';
 import { RadiusModule } from './radius/radius.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { RadiusModule } from './radius/radius.module';
     ActivitiesModule,
     TenantsModule,
     RouterModule,
+    DashboardModule,
     RadiusModule,
   ],
   controllers: [AppController],

@@ -55,7 +55,7 @@ export class UsersService {
         data: {
           tenantId,
           username,
-          email: email || null,
+          email: email?.toLowerCase() || null,
           password: hashedPassword,
           role,
           mikrotikCreated: role === 'CUSTOMER',
@@ -95,7 +95,7 @@ export class UsersService {
         data: {
           tenantId: null, // SUPER_ADMIN has no tenant
           username,
-          email,
+          email: email.toLowerCase(),
           password: hashedPassword,
           role: 'SUPER_ADMIN',
           isActive: true, // Super admins are active by default
@@ -127,7 +127,12 @@ export class UsersService {
         tenantId,
         OR: [
           { username: identifier },
-          { email: identifier },
+          {
+            email: {
+              equals: identifier,
+              mode: 'insensitive',
+            },
+          },
         ],
       },
     });
@@ -170,7 +175,12 @@ export class UsersService {
       where: {
         OR: [
           { username: identifier },
-          { email: identifier },
+          {
+            email: {
+              equals: identifier,
+              mode: 'insensitive',
+            },
+          },
         ],
       },
     });
