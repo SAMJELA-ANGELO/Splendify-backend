@@ -4,5 +4,7 @@ export class RadiusStatusDto {
   acctPort: number;
   uptime?: number;
   totalRequests?: number;
+  totalAuthRequests?: number;
+  totalAcctRequests?: number;
   activeSessions?: number;
 }

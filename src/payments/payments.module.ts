@@ -6,6 +6,7 @@ import { PlansModule } from '../plans/plans.module';
 import { MikrotikModule } from '../mikrotik/mikrotik.module';
 import { ActivitiesModule } from '../activities/activities.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { VoucherService } from './voucher.service';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     MikrotikModule,
     ActivitiesModule,
   ],
-  providers: [PaymentsService],
+  providers: [PaymentsService, VoucherService],
   controllers: [PaymentsController],
   exports: [PaymentsService],
 })

@@ -83,56 +83,6 @@ async function main() {
     console.log(`✅ Plan created: ${plan.name}`);
   }
 
-  // Create sample notifications
-  const notifications = [
-    {
-      type: 'SYSTEM',
-      title: 'Welcome to Splendify!',
-      message: 'Your ISP management dashboard is now ready. Start by configuring your routers and plans.',
-      priority: 'HIGH',
-      data: { action: 'setup_guide' },
-    },
-    {
-      type: 'PAYMENT',
-      title: 'Payment Reminder',
-      message: 'Several users have pending payments. Check the billing section for details.',
-      priority: 'MEDIUM',
-      data: { pendingPayments: 5 },
-    },
-    {
-      type: 'ROUTER',
-      title: 'Router Connection Issue',
-      message: 'Router "Main Router" is experiencing connectivity issues. Please check the configuration.',
-      priority: 'HIGH',
-      data: { routerId: 'router-123', issue: 'connectivity' },
-    },
-    {
-      type: 'USER',
-      title: 'New User Registration',
-      message: 'A new user has registered and is waiting for approval.',
-      priority: 'LOW',
-      data: { userId: 'user-456', requiresApproval: true },
-    },
-    {
-      type: 'BILLING',
-      title: 'Monthly Report Available',
-      message: 'Your monthly billing report for May 2026 is now available in the Reports section.',
-      priority: 'MEDIUM',
-      data: { reportType: 'monthly', month: 'May', year: 2026 },
-    },
-  ];
-
-  for (const notificationData of notifications) {
-    const notification = await prisma.notification.create({
-      data: {
-        ...notificationData,
-        tenantId: defaultTenant.id,
-        read: false,
-      },
-    });
-    console.log(`✅ Notification created: ${notification.title}`);
-  }
-
   console.log('🎉 Seed completed!');
 }
 

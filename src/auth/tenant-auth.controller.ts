@@ -10,11 +10,10 @@ import { ApiOperation, ApiResponse, ApiTags, ApiBody } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from './local-auth.guard';
 import { LoginDto } from './dto/login.dto';
-import { TenantSignupDto } from './dto/tenant-signup.dto';
+import { SignupDto } from './dto/signup.dto';
 import { UsersService } from '../users/users.service';
 import { PaymentsService } from '../payments/payments.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
-import { TenantsService } from '../tenants/tenants.service';
 
 @ApiTags('Tenant Auth')
 @Controller('tenant/auth')
@@ -26,7 +25,6 @@ export class TenantAuthController {
     private usersService: UsersService,
     private paymentsService: PaymentsService,
     private mikrotikService: MikrotikService,
-    private tenantsService: TenantsService,
   ) {}
 
   @ApiOperation({ summary: 'Tenant portal login with username/email and password' })
@@ -43,38 +41,29 @@ export class TenantAuthController {
   }
 
   @ApiOperation({ summary: 'Register a new tenant portal user account' })
-  @ApiBody({ type: TenantSignupDto })
+  @ApiBody({ type: SignupDto })
   @ApiResponse({ status: 201, description: 'Tenant portal user successfully registered' })
   @ApiResponse({ status: 400, description: 'Invalid input or user already exists' })
   @Post('register')
-  async register(@Body() body: TenantSignupDto, @Request() req: any) {
-    this.logger.log(`📝 Tenant registration attempt: ${body.username}`);
-    // No captive portal fields needed for tenant registration
-
-    // Create new tenant
-    const tenant = await this.tenantsService.create({
-      name: body.username, // Temporary name, will be updated later
-      email: body.email,
-      isActive: true,
-    });
-    const tenantId = tenant.id;
-    const role = 'ISP_ADMIN';
-    this.logger.log(`✅ New tenant created: ${tenant.name} (ID: ${tenant.id})`);
+  async register(@Body() body: SignupDto, @Request() req: any) {
+    this.logger.log(`📝 Tenant registration attempt: ${body.username} (Tenant: ${body.tenantId})`);
+    if (body.macAddress) {
+      this.logger.log(`   📌 Device MAC: ${body.macAddress}`);
+    }
 
     const user = await this.usersService.create(
-      tenantId,
+      body.tenantId,
       body.username,
       body.password,
       body.email,
-      undefined, // No MAC address for tenant registration
-      undefined, // No IP address for tenant registration
-      undefined, // No router identity for tenant registration
-      role,
+      body.macAddress,
+      body.ipAddress,
+      body.routerIdentity,
     );
 
-    this.logger.log(`✅ User registered: ${user.username} (ID: ${user.id}, Role: ${user.role})`);
+    this.logger.log(`✅ Tenant user registered: ${user.username} (ID: ${user.id})`);
     const loginResult = await this.authService.login(user);
-    this.logger.log(`✅ User auto-logged in: ${user.username}`);
+    this.logger.log(`✅ Tenant user auto-logged in: ${user.username}`);
     return loginResult;
   }
 }

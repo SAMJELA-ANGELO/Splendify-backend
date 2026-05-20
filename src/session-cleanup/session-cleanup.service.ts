@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
+import type { RouterProvider } from '../router/router-provider.interface';
+import { Inject } from '@nestjs/common';
 
 @Injectable()
 export class SessionCleanupService {
@@ -10,6 +12,7 @@ export class SessionCleanupService {
   constructor(
     private prisma: PrismaService,
     private mikrotikService: MikrotikService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
   ) {}
 
   /**
@@ -140,43 +143,59 @@ export class SessionCleanupService {
   private async deactivateExpiredUser(user: any) {
     try {
       this.logger.log(
-        `  ⏱️ Disabling expired session for: ${user.username} (expired: ${user.sessionExpiry})`,
+        `  ⏱️ Disabling expired session for: ${user.username}`,
       );
+
+      // Log purchase-based expiry details
+      if (user.planPurchaseTime && user.planDurationHours) {
+        const purchaseDate = new Date(user.planPurchaseTime);
+        const expireDate = new Date(user.sessionExpiry);
+        this.logger.log(
+          `     📅 Purchase-based expiry:`,
+        );
+        this.logger.log(
+          `        Purchased: ${purchaseDate.toISOString()}`,
+        );
+        this.logger.log(
+          `        Duration: ${user.planDurationHours} hours`,
+        );
+        this.logger.log(
+          `        Expires: ${expireDate.toISOString()}`,
+        );
+      } else {
+        this.logger.log(
+          `     ⏳ Session expiry: ${user.sessionExpiry}`,
+        );
+      }
 
       // 1. Unbind MAC address using FAILOVER (try both Home and School routers)
       if (user.macAddress) {
         try {
-          this.logger.log(
-            `    1️⃣ Removing MAC binding (failover): ${user.macAddress}`,
-          );
-          await this.mikrotikService.unbindMacOnAvailableRouters(
-            user.macAddress,
-          );
-          this.logger.log(
-            `    ✅ MAC address removed from bypass list(s): ${user.macAddress}`,
-          );
+          this.logger.log(`    1️⃣ Removing MAC binding (failover): ${user.macAddress}`);
+          if (this.routerProvider?.unbindMacOnAvailableRouters) {
+            await this.routerProvider.unbindMacOnAvailableRouters(user.macAddress);
+          } else {
+            await this.mikrotikService.unbindMacOnAvailableRouters(user.macAddress);
+          }
+          this.logger.log(`    ✅ MAC address removed from bypass list(s): ${user.macAddress}`);
         } catch (macError: any) {
-          this.logger.warn(
-            `    ⚠️ Failed to unbind MAC ${user.macAddress}: ${macError.message} (will continue...)`,
-          );
+          this.logger.warn(`    ⚠️ Failed to unbind MAC ${user.macAddress}: ${macError.message} (will continue...)`);
           // Continue even if MAC unbinding fails
         }
       }
 
       // 2. Deactivate user on MikroTik using FAILOVER (try both routers)
       try {
-        this.logger.log(
-          `    2️⃣ Deactivating user on available MikroTik routers (failover)`,
-        );
-        await this.mikrotikService.deactivateUser(user.username);
-        this.logger.log(
-          `    ✅ User deactivated on MikroTik: ${user.username}`,
-        );
+        this.logger.log(`    2️⃣ Deactivating user on available routers (failover)`);
+        if (this.routerProvider?.disconnectUser) {
+          await this.routerProvider.disconnectUser(user.username);
+        } else {
+          await this.mikrotikService.deactivateUser(user.username);
+        }
+        this.logger.log(`    ✅ User deactivated on router(s): ${user.username}`);
       } catch (mikrotikError: any) {
-        this.logger.warn(
-          `    ⚠️ Failed to deactivate ${user.username} on MikroTik: ${mikrotikError.message} (will continue...)`,
-        );
-        // Continue with database update even if MikroTik fails
+        this.logger.warn(`    ⚠️ Failed to deactivate ${user.username} on router(s): ${mikrotikError.message} (will continue...)`);
+        // Continue with database update even if router deactivation fails
       }
 
       // 3. Update user status in database

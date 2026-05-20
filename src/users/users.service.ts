@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, User as PrismaUser } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
+import type { RouterProvider } from '../router/router-provider.interface';
+import { Inject } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -11,6 +13,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private mikrotikService: MikrotikService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
   ) {}
 
   async create(
@@ -39,11 +42,15 @@ export class UsersService {
     try {
       // Only create MikroTik user for CUSTOMER role
       if (role === 'CUSTOMER') {
-        this.logger.log(`  1️⃣ Creating MikroTik hotspot user: ${username}`);
-        await this.mikrotikService.createUser(username, password);
-        this.logger.log(`  ✅ MikroTik hotspot user created: ${username}`);
+        this.logger.log(`  1️⃣ Creating hotspot user (router proxy or radius): ${username}`);
+        if (this.routerProvider?.createUser) {
+          await this.routerProvider.createUser(username, password);
+        } else {
+          await this.mikrotikService.createUser(username, password);
+        }
+        this.logger.log(`  ✅ Hotspot user created/registered: ${username}`);
       } else {
-        this.logger.log(`  1️⃣ Skipping MikroTik user creation for role: ${role}`);
+        this.logger.log(`  1️⃣ Skipping router user creation for role: ${role}`);
       }
 
       this.logger.log(`  2️⃣ Hashing password for database storage`);
@@ -93,13 +100,13 @@ export class UsersService {
       this.logger.log(`  2️⃣ Creating SUPER_ADMIN user record in PostgreSQL`);
       const savedUser = await this.prisma.user.create({
         data: {
-          tenantId: null, // SUPER_ADMIN has no tenant
           username,
           email: email.toLowerCase(),
           password: hashedPassword,
           role: 'SUPER_ADMIN',
           isActive: true, // Super admins are active by default
           mikrotikCreated: false,
+          // tenantId is omitted intentionally - SUPER_ADMIN has no tenant
         },
       });
 

@@ -6,7 +6,11 @@ export class CreateRouterDto {
   @IsString()
   name: string;
 
-  @ApiProperty({ example: '192.168.88.1', description: 'Local LAN IP address' })
+  @ApiProperty({ example: '192.168.88.1' })
+  @IsString()
+  ipAddress: string;
+
+  @ApiProperty({ example: '192.168.88.1' })
   @IsString()
   localIpAddress: string;
 
@@ -14,24 +18,14 @@ export class CreateRouterDto {
   @IsString()
   username: string;
 
-  @ApiProperty({ example: 'password123', writeOnly: true, description: 'Router admin password (will be encrypted)' })
+  @ApiProperty({ example: 'password123', writeOnly: true })
   @IsString()
   password: string;
 
-  @ApiProperty({ example: 'XenFi-MainOffice', required: false, description: 'MikroTik identity/system name' })
+  @ApiProperty({ example: 'MainOfficeRouter', required: false })
   @IsOptional()
   @IsString()
   identity?: string;
-
-  @ApiProperty({ example: 'your-secure-shared-secret', required: false, description: 'RADIUS shared secret (will be encrypted)' })
-  @IsOptional()
-  @IsString()
-  radiusSecret?: string;
-
-  @ApiProperty({ example: 'Bamenda Central', required: false, description: 'Physical location of the router' })
-  @IsOptional()
-  @IsString()
-  location?: string;
 
   @ApiProperty({ example: true, required: false })
   @IsOptional()

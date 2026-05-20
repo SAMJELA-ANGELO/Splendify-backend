@@ -21,6 +21,12 @@ export class TenantsService {
     });
   }
 
+  async findBySubdomain(subdomain: string): Promise<Tenant | null> {
+    return this.prisma.tenant.findUnique({
+      where: { subdomain },
+    });
+  }
+
   async create(tenantData: Partial<Tenant>): Promise<Tenant> {
     const data = { ...tenantData } as any;
     if (data.fapshiApiKey) {

@@ -1,29 +1,32 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import { RadiusService } from '../radius/radius.service';
+import type { RouterProvider } from '../router/router-provider.interface';
 
 @Injectable()
 export class MikrotikService implements OnModuleInit {
   private logger = new Logger('MikrotikService');
   private proxyUrl: string = '';
 
-  constructor(private configService: ConfigService) {}
+  constructor(
+    private configService: ConfigService,
+    private radiusService: RadiusService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
+  ) {}
 
   async onModuleInit() {
     // Use the .NET MikroTik service (Tik4Net) via HTTP proxy
     const urlFromConfig = this.configService.get<string>('MIKROTIK_PROXY_URL');
     if (!urlFromConfig) {
-      this.logger.error(
-        'MIKROTIK_PROXY_URL environment variable is not configured. MikroTik features will be unavailable.',
+      this.logger.warn(
+        'MIKROTIK_PROXY_URL environment variable is not configured. Falling back to RADIUS-only operations where possible.',
       );
-      throw new Error(
-        'MIKROTIK_PROXY_URL is required to communicate with MikroTik service',
-      );
+      this.proxyUrl = '';
+    } else {
+      this.proxyUrl = urlFromConfig;
+      this.logger.log(`MikroTik service configured with proxy URL: ${this.proxyUrl}`);
     }
-    this.proxyUrl = urlFromConfig;
-    this.logger.log(
-      `MikroTik service configured with proxy URL: ${this.proxyUrl}`,
-    );
   }
 
   async createUser(username: string, password: string) {
@@ -63,16 +66,34 @@ export class MikrotikService implements OnModuleInit {
   }
 
   async deactivateUser(username: string) {
+    // Prefer RADIUS CoA/Disconnect when available
+    try {
+      this.logger.log(`Attempting RADIUS CoA/Disconnect for user ${username}`);
+      const disconnected = await this.radiusService.coaDisconnect(username);
+      if (disconnected) {
+        this.logger.log(`✅ User disconnected via RADIUS CoA: ${username}`);
+        return { result: 'disconnected', method: 'radius' };
+      }
+      this.logger.warn(`RADIUS CoA did not disconnect user ${username} (or not available). Falling back to proxy if configured.`);
+    } catch (err: any) {
+      this.logger.error(`Error during RADIUS CoA for ${username}: ${err?.message || err}`);
+    }
+
+    if (!this.proxyUrl) {
+      this.logger.warn(`No MikroTik proxy configured and RADIUS CoA failed - cannot deactivate ${username}`);
+      return { result: 'noop', reason: 'no-proxy-and-radius-failed' };
+    }
+
     const url = `${this.proxyUrl.replace(/\/$/, '')}/api/mikrotik/deactivate`;
-    this.logger.warn(`⛔ DEPRECATED: Deactivating user ${username}`);
+    this.logger.warn(`⛔ DEPRECATED: Deactivating user ${username} via proxy`);
     try {
       this.logger.log(`  1️⃣ Sending DELETE request to: ${url}`);
       const resp = await axios.delete(url, { data: { username } });
-      this.logger.log(`  ✅ User deactivated: ${username}`);
+      this.logger.log(`  ✅ User deactivated via proxy: ${username}`);
       return resp.data;
     } catch (err: any) {
       this.logger.error(
-        `❌ Failed to deactivate user ${username}: ${err?.response?.data?.error || err.message}`,
+        `❌ Failed to deactivate user ${username} via proxy: ${err?.response?.data?.error || err.message}`,
       );
       throw err;
     }

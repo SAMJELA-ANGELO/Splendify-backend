@@ -15,6 +15,8 @@ import { SilentLoginDto } from './dto/silent-login.dto';
 import { UsersService } from '../users/users.service';
 import { PaymentsService } from '../payments/payments.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
+import type { RouterProvider } from '../router/router-provider.interface';
+import { Inject } from '@nestjs/common';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -26,6 +28,7 @@ export class AuthController {
     private usersService: UsersService,
     private paymentsService: PaymentsService,
     private mikrotikService: MikrotikService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
   ) {}
 
   @ApiOperation({ summary: 'User login with username/email and password' })
@@ -132,30 +135,39 @@ export class AuthController {
       if (shouldAuthenticate) {
         try {
           // If MAC provided in login request, bind it
-          if (body.macAddress) {
+            if (body.macAddress) {
             // FIX: Decode URL-encoded MAC address (02%3A38... → 02:38:9C...)
             const decodedMac = decodeURIComponent(body.macAddress);
             this.logger.log(
               `📌 Binding MAC ${body.macAddress} → Decoded: ${decodedMac} for WiFi access`,
             );
-            await this.mikrotikService.bindMacOnAvailableRouter(
-              decodedMac,
-              Math.ceil(
-                (user.sessionExpiry.getTime() - now.getTime()) /
-                  (1000 * 60 * 60),
-              ),
-            );
+            if (this.routerProvider?.bindMacOnAvailableRouter) {
+              await this.routerProvider.bindMacOnAvailableRouter(
+                decodedMac,
+                Math.ceil((user.sessionExpiry.getTime() - now.getTime()) / (1000 * 60 * 60)),
+              );
+            } else {
+              await this.mikrotikService.bindMacOnAvailableRouter(
+                decodedMac,
+                Math.ceil((user.sessionExpiry.getTime() - now.getTime()) / (1000 * 60 * 60)),
+              );
+            }
             this.logger.log(`✅ MAC binding completed`);
           }
 
           // Activate/create hotspot user
           this.logger.log(`🔄 Activating hotspot user...`);
-          await this.mikrotikService.activateUser(
-            user.username,
-            Math.ceil(
-              (user.sessionExpiry.getTime() - now.getTime()) / (1000 * 60 * 60),
-            ),
-          );
+          if (this.routerProvider?.activateOnAvailableRouter) {
+            await this.routerProvider.activateOnAvailableRouter(
+              user.username,
+              Math.ceil((user.sessionExpiry.getTime() - now.getTime()) / (1000 * 60 * 60)),
+            );
+          } else {
+            await this.mikrotikService.activateUser(
+              user.username,
+              Math.ceil((user.sessionExpiry.getTime() - now.getTime()) / (1000 * 60 * 60)),
+            );
+          }
           this.logger.log(
             `✅ MikroTik authentication successful for ${user.username}`,
           );
@@ -374,16 +386,23 @@ export class AuthController {
     this.logger.log(`🔐 Full request body:`, body);
 
     try {
-      // Call MikroTik service to perform silent login
-      this.logger.log(`🔄 Calling MikroTik SilentLogin service...`);
-      const result = await this.mikrotikService.silentLogin(
-        body.username,
-        body.password,
-        body.macAddress,
-        body.ipAddress,
-        body.durationHours,
-      );
-      this.logger.log(`✅ Silent login successful on router: ${result}`);
+      this.logger.log(`🔄 Performing silent login via router provider or MikroTik fallback`);
+      const result = this.routerProvider?.silentLogin
+        ? await this.routerProvider.silentLogin(
+            body.username,
+            body.password,
+            body.macAddress,
+            body.ipAddress,
+            body.durationHours,
+          )
+        : await this.mikrotikService.silentLogin(
+            body.username,
+            body.password,
+            body.macAddress,
+            body.ipAddress,
+            body.durationHours,
+          );
+      this.logger.log(`✅ Silent login successful`);
       this.logger.log(`✅ ===== SILENT LOGIN SUCCESS =====`);
       return {
         success: true,

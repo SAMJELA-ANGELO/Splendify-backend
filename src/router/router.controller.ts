@@ -23,7 +23,6 @@ import { RouterService } from './router.service';
 import { CreateRouterDto, UpdateRouterDto, RouterResponseDto } from './dto';
 import * as TenantTypes from '../tenants/tenant.interceptor';
 import { Request } from 'express';
-import { MikrotikService } from '../mikrotik/mikrotik.service';
 
 @ApiTags('Routers')
 @Controller('routers')
@@ -32,10 +31,7 @@ import { MikrotikService } from '../mikrotik/mikrotik.service';
 export class RouterController {
   private readonly logger = new Logger(RouterController.name);
 
-  constructor(
-    private readonly routerService: RouterService,
-    private readonly mikrotikService: MikrotikService,
-  ) {}
+  constructor(private readonly routerService: RouterService) {}
 
   @ApiOperation({ summary: 'Create a router for the current tenant' })
   @ApiBody({ type: CreateRouterDto })
@@ -100,19 +96,5 @@ export class RouterController {
     const tenantId = request.tenantId!;
     this.logger.log(`Deleting router ${id} for tenant ${tenantId}`);
     return this.routerService.remove(tenantId, id);
-  }
-
-  @ApiOperation({ summary: 'Test MikroTik connection' })
-  @ApiResponse({ status: 200, description: 'Connection test result' })
-  @Post('test-connection')
-  async testConnection() {
-    this.logger.log(`Testing MikroTik connection`);
-    try {
-      const result = await this.mikrotikService.testConnection();
-      return { success: true, message: 'MikroTik connection successful', data: result };
-    } catch (error) {
-      this.logger.error(`MikroTik connection test failed: ${error.message}`);
-      return { success: false, message: 'MikroTik connection failed', error: error.message };
-    }
   }
 }

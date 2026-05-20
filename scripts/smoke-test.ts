@@ -67,7 +67,10 @@ async function smokeTest() {
       username: ADMIN_USERNAME,
       password: ADMIN_PASSWORD,
     });
-    token = loginResponse.data.access_token;
+    token = loginResponse.data?.data?.access_token || loginResponse.data?.data?.token;
+    if (!token) {
+      throw new Error('Admin login did not return a JWT token');
+    }
     console.log('✅ Admin login successful\n');
 
     // Set authorization header for subsequent requests

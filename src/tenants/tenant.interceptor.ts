@@ -161,7 +161,6 @@ export class TenantInterceptor implements NestInterceptor {
       { method: 'GET', path: '/health' },
       { method: 'GET', path: '/health/ping' },
       { method: 'GET', path: '/health/detailed' },
-      { method: 'GET', path: '/radius/status' },
     ];
 
     const requestPath = (request.path || request.url || '').split('?')[0];

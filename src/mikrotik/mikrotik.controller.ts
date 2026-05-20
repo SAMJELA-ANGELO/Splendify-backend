@@ -17,6 +17,8 @@ import {
   ApiBody,
 } from '@nestjs/swagger';
 import { MikrotikService } from './mikrotik.service';
+import type { RouterProvider } from '../router/router-provider.interface';
+import { Inject } from '@nestjs/common';
 import { ActivateUserDto } from './dto/activate-user.dto';
 import { DisableUserDto } from './dto/disable-user.dto';
 import { DeleteUserDto } from './dto/delete-user.dto';
@@ -28,7 +30,10 @@ import { AdminGuard } from '../auth/admin.guard';
 export class MikrotikController {
   private readonly logger = new Logger(MikrotikController.name);
 
-  constructor(private readonly mikrotikService: MikrotikService) {}
+  constructor(
+    private readonly mikrotikService: MikrotikService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
+  ) {}
 
   @ApiOperation({ summary: 'Test MikroTik connection' })
   @ApiBearerAuth()
@@ -40,10 +45,12 @@ export class MikrotikController {
   async testConnection() {
     this.logger.log(`🌐 MikroTik connection test initiated`);
     try {
-      const result = await this.mikrotikService.testConnection();
+      const result = this.routerProvider?.testConnection
+        ? await this.routerProvider.testConnection()
+        : await this.mikrotikService.testConnection();
       this.logger.log(`✅ MikroTik connection successful`);
       return { message: 'MikroTik connection successful', data: result };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`❌ MikroTik connection test failed: ${error.message}`);
       throw error;
     }
@@ -59,10 +66,12 @@ export class MikrotikController {
   async listUsers() {
     this.logger.log(`📋 Listing all hotspot users from MikroTik`);
     try {
-      const users = await this.mikrotikService.listHotspotUsers();
-      this.logger.log(`✅ Retrieved ${users.length} hotspot users`);
+      const users = this.routerProvider?.listHotspotUsers
+        ? await this.routerProvider.listHotspotUsers()
+        : await this.mikrotikService.listHotspotUsers();
+      this.logger.log(`✅ Retrieved ${users?.length ?? 0} hotspot users`);
       return { users };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`❌ Failed to list hotspot users: ${error.message}`);
       throw error;
     }
@@ -79,14 +88,16 @@ export class MikrotikController {
   async getUserDetails(@Param('username') username: string) {
     this.logger.log(`🔍 Fetching details for MikroTik user: ${username}`);
     try {
-      const user = await this.mikrotikService.getUserDetails(username);
+      const user = this.routerProvider?.getUserDetails
+        ? await this.routerProvider.getUserDetails(username)
+        : await this.mikrotikService.getUserDetails(username);
       if (!user) {
         this.logger.warn(`⚠️ User ${username} not found on MikroTik`);
         return { message: `User ${username} not found` };
       }
       this.logger.log(`✅ User details retrieved for: ${username}`);
       return { user };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `❌ Failed to fetch user details for ${username}: ${error.message}`,
       );
@@ -104,10 +115,12 @@ export class MikrotikController {
   async getActiveUsers() {
     this.logger.log(`🟢 Fetching active hotspot users from MikroTik`);
     try {
-      const activeUsers = await this.mikrotikService.getActiveUsers();
-      this.logger.log(`✅ Retrieved ${activeUsers.length} active users`);
+      const activeUsers = this.routerProvider?.getActiveUsers
+        ? await this.routerProvider.getActiveUsers()
+        : await this.mikrotikService.getActiveUsers();
+      this.logger.log(`✅ Retrieved ${activeUsers?.length ?? 0} active users`);
       return { activeUsers };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`❌ Failed to fetch active users: ${error.message}`);
       throw error;
     }
@@ -126,17 +139,24 @@ export class MikrotikController {
       `⏱️ Activating MikroTik user: ${body.username} for ${body.durationHours} hours`,
     );
     try {
-      await this.mikrotikService.activateUser(
-        body.username,
-        body.durationHours,
-      );
+      if (this.routerProvider?.activateUser) {
+        await this.routerProvider.activateUser(
+          body.username,
+          body.durationHours,
+        );
+      } else {
+        await this.mikrotikService.activateUser(
+          body.username,
+          body.durationHours,
+        );
+      }
       this.logger.log(
         `✅ User ${body.username} activated successfully for ${body.durationHours} hours`,
       );
       return {
         message: `User ${body.username} activated for ${body.durationHours} hours`,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `❌ Failed to activate user ${body.username}: ${error.message}`,
       );
@@ -159,12 +179,16 @@ export class MikrotikController {
       `🔒 Disabling MikroTik user: ${body.username} (account kept)`,
     );
     try {
-      await this.mikrotikService.disableUser(body.username);
+      if (this.routerProvider?.disableUser) {
+        await this.routerProvider.disableUser(body.username);
+      } else {
+        await this.mikrotikService.disableUser(body.username);
+      }
       this.logger.log(
         `✅ User ${body.username} disabled successfully (account retained)`,
       );
       return { message: `User ${body.username} disabled (account kept)` };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `❌ Failed to disable user ${body.username}: ${error.message}`,
       );
@@ -185,12 +209,16 @@ export class MikrotikController {
   async deleteUser(@Body() body: DeleteUserDto) {
     this.logger.log(`🗑️ Permanently deleting MikroTik user: ${body.username}`);
     try {
-      await this.mikrotikService.deleteUser(body.username);
+      if (this.routerProvider?.deleteUser) {
+        await this.routerProvider.deleteUser(body.username);
+      } else {
+        await this.mikrotikService.deleteUser(body.username);
+      }
       this.logger.log(
         `✅ User ${body.username} permanently deleted from MikroTik`,
       );
       return { message: `User ${body.username} permanently deleted` };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `❌ Failed to delete user ${body.username}: ${error.message}`,
       );
@@ -214,13 +242,16 @@ export class MikrotikController {
       `⛔ DEPRECATED: Deactivate endpoint called for ${body.username} (use /delete instead)`,
     );
     try {
-      // Kept for backwards compatibility - calls delete which removes the user
-      await this.mikrotikService.deactivateUser(body.username);
+      if (this.routerProvider?.deactivateUser) {
+        await this.routerProvider.deactivateUser(body.username);
+      } else {
+        await this.mikrotikService.deactivateUser(body.username);
+      }
       this.logger.log(
         `✅ User ${body.username} deactivated (via deprecated endpoint)`,
       );
       return { message: `User ${body.username} deactivated` };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `❌ Failed to deactivate user ${body.username}: ${error.message}`,
       );

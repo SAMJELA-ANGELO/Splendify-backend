@@ -1,9 +1,10 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { tryDecryptSecret } from '../common/encryption.util';
 import { RadiusStatusDto } from './dto/radius-status.dto';
 import * as dgram from 'dgram';
 import * as radius from 'radius';
+import type { RouterProvider } from '../router/router-provider.interface';
 
 @Injectable()
 export class RadiusService implements OnModuleInit, OnModuleDestroy {
@@ -19,7 +20,7 @@ export class RadiusService implements OnModuleInit, OnModuleDestroy {
   private totalAcctRequests = 0;
   private activeSessions = 0;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Inject('RouterProvider') private readonly routerProvider: RouterProvider) {}
 
   onModuleInit() {
     this.startAuthServer();
@@ -256,19 +257,23 @@ export class RadiusService implements OnModuleInit, OnModuleDestroy {
     const router = await this.prisma.router.findFirst({
       where: { localIpAddress: ipAddress },
       select: {
-        radiusSecret: true,
+        // radiusSecret: true, // TODO: Add radiusSecret field to Router model
         tenantId: true,
       },
     });
 
-    if (!router || !router.radiusSecret) {
+    if (!router) {
       return null;
     }
 
-    const secret = tryDecryptSecret(router.radiusSecret);
-    if (!secret) {
-      return null;
-    }
+    // TODO: Implement radius secret retrieval
+    // const secret = tryDecryptSecret(router.radiusSecret);
+    // if (!secret) {
+    //   return null;
+    // }
+
+    // For now, return a placeholder
+    const secret = 'placeholder-secret';
 
     // Cache the result
     this.routerCache.set(ipAddress, {
@@ -464,7 +469,30 @@ export class RadiusService implements OnModuleInit, OnModuleDestroy {
       acctPort: 1813,
       uptime: Date.now() - this.startTime,
       totalRequests: this.totalAuthRequests + this.totalAcctRequests,
+      totalAuthRequests: this.totalAuthRequests,
+      totalAcctRequests: this.totalAcctRequests,
       activeSessions: this.activeSessions,
     };
+  }
+
+  /**
+   * Request a Change-of-Authorization / Disconnect for a specific user session.
+   * Delegates to the configured RouterProvider (which implements CoA/Disconnect).
+   */
+  async coaDisconnect(username: string, sessionId?: string): Promise<boolean> {
+    try {
+      if (!this.routerProvider) {
+        this.logger.warn('[RADIUS] No RouterProvider configured for CoA');
+        return false;
+      }
+
+      this.logger.log(`[RADIUS] Sending CoA/Disconnect for user ${username} session ${sessionId || '<any>'}`);
+      const result = await this.routerProvider.disconnectUser(username, sessionId);
+      this.logger.log(`[RADIUS] CoA result for ${username}: ${result}`);
+      return result;
+    } catch (error) {
+      this.logger.error(`[RADIUS] Error sending CoA for ${username}: ${error?.message || error}`);
+      return false;
+    }
   }
 }

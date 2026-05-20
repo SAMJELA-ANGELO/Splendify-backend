@@ -4,11 +4,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { PlansService } from '../plans/plans.service';
 import { MikrotikService } from '../mikrotik/mikrotik.service';
+import type { RouterProvider } from '../router/router-provider.interface';
+import { Inject } from '@nestjs/common';
 import { ActivitiesService } from '../activities/activities.service';
+import { VoucherService } from './voucher.service';
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
 import { tryDecryptSecret } from '../common/encryption.util';
 import { parsePhoneNumber } from 'libphonenumber-js';
+import { randomBytes } from 'crypto';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class PaymentsService {
@@ -19,7 +24,9 @@ export class PaymentsService {
     private plansService: PlansService,
     private mikrotikService: MikrotikService,
     private activitiesService: ActivitiesService,
+    private voucherService: VoucherService,
     private configService: ConfigService,
+    @Inject('RouterProvider') private routerProvider?: RouterProvider,
   ) {}
 
   async initiatePayment(
@@ -1078,30 +1085,31 @@ export class PaymentsService {
       let username: string;
       let targetUserId: string;
       let needsReactivation = false;
+      let giftPassword = payment.password;
 
       if (isGift && payment.recipientUsername) {
         // Gift flow: activate recipient's username
         username = payment.recipientUsername;
-        this.logger.log(
-          `  🎁 GIFT FLOW: Activating for recipient: ${username}`,
-        );
+        this.logger.log(`  🎁 GIFT FLOW: Activating for recipient: ${username}`);
 
         // Check if recipient exists
         this.logger.log(`  2️⃣ Checking if recipient exists: ${username}`);
-        let recipient = await this.usersService.findByUsername(
-          payment.tenantId,
-          username,
-        );
+        let recipient = await this.usersService.findByUsername(payment.tenantId, username);
 
         if (!recipient) {
           // Create new recipient user
-          this.logger.log(
-            `  ➕ Recipient doesn't exist, creating new user: ${username}`,
-          );
+          this.logger.log(`  ➕ Recipient doesn't exist, creating new user: ${username}`);
+
+          // Generate a secure temporary password for gift recipients if none provided
+          if (!giftPassword) {
+            giftPassword = randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+            this.logger.log(`  🔐 Generated temporary password for gift recipient: ****** (12 chars)`);
+          }
+
           recipient = await this.usersService.create(
             payment.tenantId,
             username,
-            payment.password || username, // Use provided password or default to username
+            giftPassword,
             undefined, // macAddress - not known for gifts
             undefined, // ipAddress - not known for gifts
             undefined, // routerIdentity - not known for gifts
@@ -1109,10 +1117,23 @@ export class PaymentsService {
           this.logger.log(`  ✅ New recipient user created: ${recipient.id}`);
           needsReactivation = false; // New user, not reactivation
         } else {
-          this.logger.log(
-            `  ✅ Recipient found: ${recipient.username} (${recipient.isActive ? 'Active' : 'Inactive'})`,
-          );
+          this.logger.log(`  ✅ Recipient found: ${recipient.username} (${recipient.isActive ? 'Active' : 'Inactive'})`);
           needsReactivation = !recipient.isActive;
+          if (payment.password) {
+            giftPassword = payment.password;
+            const hashedPassword = await bcrypt.hash(payment.password, 10);
+            await this.usersService.updateUser(payment.tenantId, recipient.id, {
+              password: hashedPassword,
+            });
+            this.logger.log(`  🔐 Updated existing recipient password for gift user: ${username}`);
+          } else if (!giftPassword) {
+            giftPassword = randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+            const hashedPassword = await bcrypt.hash(giftPassword, 10);
+            await this.usersService.updateUser(payment.tenantId, recipient.id, {
+              password: hashedPassword,
+            });
+            this.logger.log(`  🔐 Generated and updated temporary password for existing gift recipient: ****** (12 chars)`);
+          }
           if (needsReactivation) {
             this.logger.log(`  🔄 Recipient needs reactivation`);
           }
@@ -1159,7 +1180,6 @@ export class PaymentsService {
       const userUpdateData: any = {
         isActive: true,
         sessionExpiry: expiry,
-        planId: payment.planId, // Assign the plan to the user
       };
 
       // For gifts, we don't have device info since recipient logs in manually
@@ -1196,6 +1216,30 @@ export class PaymentsService {
         `  ✅ ${isGift ? 'Recipient' : 'User'} ${needsReactivation ? 'reactivated' : 'activated'} in MongoDB${isGift ? '' : ' with device info'}`,
       );
 
+      // Generate voucher for RADIUS authentication
+      this.logger.log(`  🎟️  6️⃣ Generating RADIUS voucher`);
+      const user = await this.usersService.findById(payment.tenantId, targetUserId);
+
+      // Determine plaintext password to use for voucher: prefer provided gift password, otherwise reuse generated gift password
+      let voucherPlaintext = payment.password || giftPassword;
+      if (!voucherPlaintext && isGift) {
+        voucherPlaintext = randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+        this.logger.log(`  🔐 Generated temporary voucher password for gift: ****** (12 chars)`);
+      }
+
+      if (user && voucherPlaintext) {
+        const voucherCode = await this.voucherService.generateVoucher(
+          payment.tenantId,
+          targetUserId,
+          user,
+          voucherPlaintext,
+          plan.duration,
+        );
+        this.logger.log(`  ✅ Voucher generated: ${user.username}:****`);
+      } else {
+        this.logger.warn(`  ⚠️ Could not generate voucher - missing user or password data`);
+      }
+
       // Activate on MikroTik - FIRST: Check if user exists, create if not, then activate
       this.logger.log(`  5️⃣ Checking MikroTik user account for: ${username}`);
 
@@ -1203,8 +1247,9 @@ export class PaymentsService {
       this.logger.log(
         `  🔍 Checking if user ${username} exists on MikroTik...`,
       );
-      const userExistsOnMikrotik =
-        await this.mikrotikService.userExists(username);
+      const userExistsOnMikrotik = this.routerProvider?.userExists
+        ? await this.routerProvider.userExists(username)
+        : await this.mikrotikService.userExists(username);
 
       if (!userExistsOnMikrotik) {
         this.logger.log(
@@ -1212,10 +1257,14 @@ export class PaymentsService {
         );
         try {
           // Create the user account on MikroTik first
-          await this.mikrotikService.createUser(
-            username,
-            payment.password || username,
-          );
+          if (this.routerProvider?.createUser) {
+            await this.routerProvider.createUser(username, giftPassword || username);
+          } else {
+            await this.mikrotikService.createUser(
+              username,
+              giftPassword || username,
+            );
+          }
           this.logger.log(
             `  ✅ User ${username} created successfully on MikroTik`,
           );
@@ -1239,11 +1288,12 @@ export class PaymentsService {
         this.logger.log(
           `  📌 ${needsReactivation ? 'Reactivating' : 'Creating'} hotspot user account: ${username}`,
         );
-        const createUserResult =
-          await this.mikrotikService.createHotspotUserOnly(
-            username,
-            plan.duration,
-          );
+        const createUserResult = this.routerProvider?.createHotspotUserOnly
+          ? await this.routerProvider.createHotspotUserOnly(username, plan.duration)
+          : await this.mikrotikService.createHotspotUserOnly(
+              username,
+              plan.duration,
+            );
         this.logger.log(
           `  ✅ Hotspot user ${needsReactivation ? 'reactivated' : 'created'} on router: ${createUserResult.activeRouter}`,
         );
@@ -1468,13 +1518,21 @@ export class PaymentsService {
 
           try {
             // Try to perform silent login to move user from Hosts to Active
-            const silentLoginResult = await this.mikrotikService.silentLogin(
-              user.username,
-              user.password || '', // Use password if available
-              user.macAddress,
-              user.ipAddress,
-              remainingHours,
-            );
+            const silentLoginResult = this.routerProvider?.silentLogin
+              ? await this.routerProvider.silentLogin(
+                  user.username,
+                  user.password || '',
+                  user.macAddress,
+                  user.ipAddress,
+                  remainingHours,
+                )
+              : await this.mikrotikService.silentLogin(
+                  user.username,
+                  user.password || '', // Use password if available
+                  user.macAddress,
+                  user.ipAddress,
+                  remainingHours,
+                );
             this.logger.log(
               `  ✅ Silent login successful - user moved to Active tab on router: ${silentLoginResult.activeRouter}`,
             );
@@ -1492,11 +1550,12 @@ export class PaymentsService {
             this.logger.log(
               `  📌 Falling back to basic hotspot user verification`,
             );
-            const createUserResult =
-              await this.mikrotikService.createHotspotUserOnly(
-                user.username,
-                remainingHours,
-              );
+            const createUserResult = this.routerProvider?.createHotspotUserOnly
+              ? await this.routerProvider.createHotspotUserOnly(user.username, remainingHours)
+              : await this.mikrotikService.createHotspotUserOnly(
+                  user.username,
+                  remainingHours,
+                );
             this.logger.log(
               `  ✅ User verified on hotspot Hosts tab on router: ${createUserResult.activeRouter}`,
             );
@@ -1508,11 +1567,12 @@ export class PaymentsService {
           this.logger.log(
             `  📌 Basic reconnection - ensuring hotspot user exists: ${user.username}`,
           );
-          const createUserResult =
-            await this.mikrotikService.createHotspotUserOnly(
-              user.username,
-              remainingHours,
-            );
+          const createUserResult = this.routerProvider?.createHotspotUserOnly
+            ? await this.routerProvider.createHotspotUserOnly(user.username, remainingHours)
+            : await this.mikrotikService.createHotspotUserOnly(
+                user.username,
+                remainingHours,
+              );
           this.logger.log(
             `  ✅ Hotspot user verified on router: ${createUserResult.activeRouter}`,
           );

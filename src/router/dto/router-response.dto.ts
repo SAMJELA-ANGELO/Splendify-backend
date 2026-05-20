@@ -7,17 +7,14 @@ export class RouterResponseDto {
   @ApiProperty({ example: 'Main Office Router' })
   name: string;
 
-  @ApiProperty({ example: '192.168.88.1', description: 'Local LAN IP address' })
-  localIpAddress: string;
+  @ApiProperty({ example: '192.168.88.1' })
+  ipAddress: string;
 
   @ApiProperty({ example: 'admin' })
   username: string;
 
-  @ApiProperty({ example: 'XenFi-MainOffice', required: false, description: 'MikroTik identity/system name' })
+  @ApiProperty({ example: 'MainOfficeRouter', required: false })
   identity?: string;
-
-  @ApiProperty({ example: 'Bamenda Central', required: false, description: 'Physical location' })
-  location?: string;
 
   @ApiProperty({ example: true })
   isActive: boolean;

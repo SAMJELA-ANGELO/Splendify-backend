@@ -25,6 +25,18 @@ export interface RadiusSession {
   sessionTime?: number;
 }
 
+export interface RadiusSessionLimits {
+  maxDataDownload?: number;
+  maxDataUpload?: number;
+  maxSessionTime?: number;
+  maxIdleTime?: number;
+  sessionTimeout?: number;
+  idleTimeout?: number;
+  downloadSpeed?: number;
+  uploadSpeed?: number;
+  attributes?: Record<string, any>;
+}
+
 export interface RouterProvider {
   /**
    * Authenticate a user for RADIUS access
@@ -74,16 +86,25 @@ export interface RouterProvider {
    * @returns Promise<boolean> - True if router is healthy
    */
   healthCheck(): Promise<boolean>;
-}
 
-export interface RadiusSessionLimits {
-  maxDataDownload?: number; // bytes
-  maxDataUpload?: number; // bytes
-  maxSessionTime?: number; // seconds
-  maxIdleTime?: number; // seconds
-  downloadSpeed?: number; // kbps
-  uploadSpeed?: number; // kbps
-  sessionTimeout?: number; // seconds
+  // Optional hotspot/router provisioning helpers (proxy-like operations)
+  userExists?(username: string): Promise<boolean>;
+  createUser?(username: string, password: string): Promise<any>;
+  createHotspotUserOnly?(username: string, durationHours: number): Promise<{ activeRouter?: string }>;
+  silentLogin?(username: string, password: string, macAddress: string, ipAddress: string, durationHours: number): Promise<any>;
+  bindMacOnAvailableRouter?(macAddress: string, durationHours?: number): Promise<any>;
+  unbindMacOnAvailableRouters?(macAddress: string): Promise<any>;
+  activateOnAvailableRouter?(username: string, durationHours: number, macAddress?: string): Promise<any>;
+  activateUser?(username: string, durationHours: number): Promise<any>;
+
+  // Optional admin/proxy inspection helpers
+  testConnection?(): Promise<any>;
+  listHotspotUsers?(): Promise<any[]>;
+  getUserDetails?(username: string): Promise<any>;
+  getActiveUsers?(): Promise<any[]>;
+  disableUser?(username: string): Promise<any>;
+  deleteUser?(username: string): Promise<any>;
+  deactivateUser?(username: string): Promise<any>;
   idleTimeout?: number; // seconds
   attributes?: Record<string, any>; // Additional RADIUS attributes
 }

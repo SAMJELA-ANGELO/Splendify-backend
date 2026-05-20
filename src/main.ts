@@ -3,21 +3,6 @@ import * as dotenv from 'dotenv';
 // Load environment variables from .env file at project root
 dotenv.config();
 
-// Suppress specific deprecation warnings
-process.on('warning', (warning) => {
-  // Suppress url.parse() deprecation warning from node-radius
-  if (warning.name === 'DeprecationWarning' && warning.message.includes('url.parse()')) {
-    return;
-  }
-  // Suppress circular dependency warnings about lineno/filename
-  if (warning.message.includes('circular dependency') && 
-      (warning.message.includes('lineno') || warning.message.includes('filename'))) {
-    return;
-  }
-  // Log other warnings normally
-  console.warn(warning.name, warning.message);
-});
-
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Logger } from '@nestjs/common';
@@ -25,6 +10,13 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
+
+  // Ensure Prisma BigInt values can be serialized to JSON for API responses.
+  // This avoids internal server errors when returning models with BigInt fields.
+  (BigInt.prototype as any).toJSON = function () {
+    return this.toString();
+  };
+
   const app = await NestFactory.create(AppModule);
   logger.log('✅ Application initialized');
 

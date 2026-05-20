@@ -116,6 +116,47 @@ export class MockRouterService implements RouterProvider {
     return true;
   }
 
+  // --- Proxy-like helpers (simulate MikroTik proxy behavior)
+  async userExists(username: string): Promise<boolean> {
+    this.logger.log(`MockRouter: check userExists ${username}`);
+    return false;
+  }
+
+  async createUser(username: string, password: string): Promise<any> {
+    this.logger.log(`MockRouter: createUser ${username}`);
+    return { success: true };
+  }
+
+  async createHotspotUserOnly(username: string, durationHours: number): Promise<{ activeRouter?: string }> {
+    this.logger.log(`MockRouter: createHotspotUserOnly ${username} (${durationHours}h)`);
+    return { activeRouter: 'mock-router-1' };
+  }
+
+  async silentLogin(username: string, password: string, macAddress: string, ipAddress: string, durationHours: number): Promise<any> {
+    this.logger.log(`MockRouter: silentLogin ${username} mac=${macAddress} ip=${ipAddress}`);
+    return { activeRouter: 'mock-router-1' };
+  }
+
+  async bindMacOnAvailableRouter(macAddress: string, durationHours: number = 0): Promise<any> {
+    this.logger.log(`MockRouter: bindMacOnAvailableRouter ${macAddress}`);
+    return { activeRouter: 'mock-router-1' };
+  }
+
+  async unbindMacOnAvailableRouters(macAddress: string): Promise<any> {
+    this.logger.log(`MockRouter: unbindMacOnAvailableRouters ${macAddress}`);
+    return { result: 'ok' };
+  }
+
+  async activateOnAvailableRouter(username: string, durationHours: number, macAddress?: string): Promise<any> {
+    this.logger.log(`MockRouter: activateOnAvailableRouter ${username}`);
+    return { activeRouter: 'mock-router-1' };
+  }
+
+  async activateUser(username: string, durationHours: number): Promise<any> {
+    this.logger.log(`MockRouter: activateUser ${username} (${durationHours}h)`);
+    return { success: true, activeRouter: 'mock-router-1' };
+  }
+
   async disconnectUser(username: string, sessionId?: string): Promise<boolean> {
     this.logger.log(
       `🔌 RADIUS CoA: Disconnecting user ${username}${sessionId ? ` (session: ${sessionId})` : ''}`,
@@ -140,5 +181,40 @@ export class MockRouterService implements RouterProvider {
     );
 
     return isHealthy;
+  }
+
+  async testConnection(): Promise<any> {
+    this.logger.log(`MockRouter: testConnection`);
+    return { message: 'Router provider is healthy' };
+  }
+
+  async listHotspotUsers(): Promise<any[]> {
+    this.logger.log(`MockRouter: listHotspotUsers`);
+    return [];
+  }
+
+  async getUserDetails(username: string): Promise<any> {
+    this.logger.log(`MockRouter: getUserDetails ${username}`);
+    return null;
+  }
+
+  async getActiveUsers(): Promise<any[]> {
+    this.logger.log(`MockRouter: getActiveUsers`);
+    return [];
+  }
+
+  async disableUser(username: string): Promise<any> {
+    this.logger.log(`MockRouter: disableUser ${username}`);
+    return { success: true };
+  }
+
+  async deleteUser(username: string): Promise<any> {
+    this.logger.log(`MockRouter: deleteUser ${username}`);
+    return { success: true };
+  }
+
+  async deactivateUser(username: string): Promise<any> {
+    this.logger.log(`MockRouter: deactivateUser ${username}`);
+    return { success: true };
   }
 }

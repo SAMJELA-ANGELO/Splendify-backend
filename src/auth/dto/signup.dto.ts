@@ -14,10 +14,12 @@ export class SignupDto {
 
   @ApiProperty({
     example: 'user@example.com',
-    description: 'Email address',
+    description: 'Email address (optional; used for email login)',
+    required: false,
   })
+  @IsOptional()
   @IsString()
-  email: string;
+  email?: string;
 
   @ApiProperty({
     example: 'tenant-123',

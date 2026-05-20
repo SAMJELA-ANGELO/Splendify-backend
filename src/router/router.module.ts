@@ -3,16 +3,17 @@ import { MockRouterService } from './mock-router.service';
 import { RouterController } from './router.controller';
 import { RouterService } from './router.service';
 import { PrismaModule } from '../prisma/prisma.module';
-import { MikrotikModule } from '../mikrotik/mikrotik.module';
+import { RadiusRouterService } from './radius-router.service';
 
 @Module({
-  imports: [PrismaModule, MikrotikModule],
+  imports: [PrismaModule],
   providers: [
     {
       provide: 'RouterProvider',
-      useClass: MockRouterService,
+      useClass: RadiusRouterService,
     },
     RouterService,
+    RadiusRouterService,
   ],
   controllers: [RouterController],
   exports: ['RouterProvider'],

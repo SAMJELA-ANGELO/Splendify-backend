@@ -41,6 +41,7 @@ enum PayoutStatus {
 model Tenant {
   id               String   @id @default(cuid())
   name             String
+  subdomain        String?  @unique // For multi-tenant URL routing (e.g., tenant.example.com)
   email            String
   phone            String?
   address          String?
@@ -94,13 +95,15 @@ model User {
   id                      String    @id @default(cuid())
   tenantId                String?   // Optional for SUPER_ADMIN users
   username                String    @unique // Made globally unique for super admin
-  voucherCode             String?   @unique // Voucher code for RADIUS authentication
+  voucherCode             String?   @unique // Voucher code for RADIUS authentication (format: username:password)
   email                   String?   @unique // Made globally unique
   password                String
   role                    String    @default("CUSTOMER") // 'SUPER_ADMIN', 'ISP_ADMIN', 'CUSTOMER'
   planId                  String?
   isActive                Boolean   @default(false)
   sessionExpiry           DateTime?
+  planPurchaseTime        DateTime?  // When the current plan was purchased
+  planDurationHours       Int?       // Duration of the current plan in hours
   mikrotikCreated         Boolean   @default(false)
   macAddress              String?
   ipAddress               String?

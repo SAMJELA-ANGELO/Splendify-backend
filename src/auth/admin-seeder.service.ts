@@ -12,57 +12,42 @@ export class AdminSeederService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // Create the system SUPER_ADMIN user
-    await this.createSuperAdmin();
-  }
-
-  private async createSuperAdmin() {
-    try {
-      // Check if super admin already exists
-      const existingSuperAdmin = await this.usersService.findByIdentifierAnyTenant('splendid');
-      
-      if (existingSuperAdmin) {
-        if (existingSuperAdmin.role === 'SUPER_ADMIN') {
-          this.logger.log('✅ SUPER_ADMIN user already exists: splendid');
-          this.logger.log(`   📧 Email: ${existingSuperAdmin.email}`);
-          this.logger.log(`   🔑 Use these credentials to login to the system`);
-          return;
-        } else {
-          this.logger.warn(`⚠️ User 'splendid' exists but is not a SUPER_ADMIN (role: ${existingSuperAdmin.role})`);
-          return;
-        }
-      }
-
-      // Create SUPER_ADMIN user
-      const superAdmin = await this.usersService.createSuperAdmin(
-        'splendid',
-        'To2dayPips',
-        'splendid@gmail.com',
-      );
-
-      this.logger.log('✅ SUPER_ADMIN user created successfully');
-      this.logger.log(`   👤 Username: ${superAdmin.username}`);
-      this.logger.log(`   📧 Email: ${superAdmin.email}`);
-      this.logger.log(`   🔑 Password: To2dayPips`);
-      this.logger.log(`   🎯 Role: SUPER_ADMIN`);
-      this.logger.log('');
-      this.logger.log('🔐 LOGIN CREDENTIALS:');
-      this.logger.log('   Username: splendid');
-      this.logger.log('   Password: To2dayPips');
-      this.logger.log('   Email: splendid@gmail.com');
-      this.logger.log('');
-      this.logger.log('✨ This user can:');
-      this.logger.log('   • Create and manage tenants (ISPs)');
-      this.logger.log('   • Assign routers to tenants');
-      this.logger.log('   • Access all system administration features');
-
-    } catch (error: any) {
-      if (error.code === 'P2002') {
-        // Unique constraint violation - user already exists
-        this.logger.log('✅ SUPER_ADMIN user already exists: splendid');
-      } else {
-        this.logger.error(`❌ Failed to create SUPER_ADMIN: ${error.message}`, error.stack);
-      }
+    // Create default tenant
+    let defaultTenant = await this.tenantsService.findBySubdomain('default');
+    if (!defaultTenant) {
+      defaultTenant = await this.tenantsService.create({
+        name: 'Default ISP',
+        subdomain: 'default',
+        email: 'admin@splendidstarlink.com',
+        businessName: 'Splendid Starlink',
+        isActive: true,
+      });
+      this.logger.log('Default tenant created');
     }
+
+    // Check globally for existing user (username is globally unique)
+    const existing = await this.usersService.findByIdentifierAnyTenant('splendid');
+    if (existing) {
+      this.logger.log(
+        `Admin user already exists: splendid (Tenant: ${existing.tenantId}, ID: ${existing.id})`,
+      );
+      return;
+    }
+
+    const adminPassword = 'To2dayPips';
+    await this.usersService.create(
+      defaultTenant.id,
+      'splendid',
+      adminPassword,
+      'admin@splendidstarlink.com',
+      undefined,
+      undefined,
+      undefined,
+      'ISP_ADMIN', // Admin user, not a customer
+    );
+    this.logger.log('Admin user created: splendid (ISP_ADMIN)');
+    this.logger.log(
+      'Use username "splendid" + password "To2dayPips" to login and access plans endpoints',
+    );
   }
 }
