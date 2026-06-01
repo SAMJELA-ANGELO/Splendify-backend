@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength, IsOptional, IsBoolean, IsUUID } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsBoolean } from 'class-validator';
 
 export class LoginDto {
   @ApiProperty({
@@ -11,12 +11,12 @@ export class LoginDto {
   username: string;
 
   @ApiProperty({
-    example: 'tenant-123',
+    example: 'cmpecfoi80000nztolg9vpt8k',
     description: 'Tenant ID to use for tenant-scoped login',
     required: false,
   })
   @IsOptional()
-  @IsUUID()
+  @IsString()
   tenantId?: string;
 
   @ApiProperty({ example: 'password123', description: 'Password' })
